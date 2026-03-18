@@ -247,13 +247,13 @@ orders.order_id        ←→  GA4 events.transaction_id（purchaseイベント�
 
 ## セットアップと実行
 
-### 依存ライブラリのインストール
+### 1. 依存ライブラリのインストール
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### データ生成
+### 2. デモデータの生成
 
 ```bash
 python generate.py
@@ -273,7 +273,7 @@ python generate.py --start 2025-01-01 --end 2025-03-31 --users 5000 --seed 123
 | `--users` | config の `users.total` | ユーザー総数 |
 | `--seed` | config の `settings.seed` | 乱数シード |
 
-### 出力ファイル
+実行後に以下のファイルが生成されます。
 
 ```
 output/
@@ -285,6 +285,83 @@ output/
 ├── orders.csv
 └── order_items.csv
 ```
+
+### 3. BigQuery へのロード
+
+#### 必要なもの
+
+| 項目 | 説明 | 例 |
+|---|---|---|
+| GCP プロジェクト ID | BigQuery を利用するプロジェクト | `my-project-123` |
+| データセット名 | 作成するデータセット（存在しない場合は自動作成） | `ec_demo` |
+| ロケーション | データセットのリージョン | `asia-northeast1`（東京）/ `US` / `EU` |
+| 認証 | 下記のいずれか | — |
+
+#### 認証の設定
+
+**方法 A: gcloud CLI（ローカル実行推奨）**
+
+```bash
+# gcloud CLI のインストールがまだの場合
+# https://cloud.google.com/sdk/docs/install
+
+gcloud auth application-default login
+```
+
+**方法 B: サービスアカウントキー**
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+```
+
+サービスアカウントに必要な IAM ロール：
+- `BigQuery Data Editor`（データセット・テーブルの作成・書き込み）
+- `BigQuery Job User`（ロードジョブの実行）
+
+#### ロード実行
+
+```bash
+python bigquery_load.py \
+  --project YOUR_PROJECT_ID \
+  --dataset ec_demo \
+  --location asia-northeast1
+```
+
+サービスアカウントキーを明示する場合：
+
+```bash
+python bigquery_load.py \
+  --project YOUR_PROJECT_ID \
+  --dataset ec_demo \
+  --location asia-northeast1 \
+  --key-file /path/to/service-account-key.json
+```
+
+| オプション | デフォルト | 説明 |
+|---|---|---|
+| `--project` | （必須） | GCP プロジェクト ID |
+| `--dataset` | （必須） | BigQuery データセット名 |
+| `--location` | `asia-northeast1` | データセットのロケーション |
+| `--output-dir` | `./output` | 生成ファイルのディレクトリ |
+| `--key-file` | なし（ADC使用） | サービスアカウントキーのパス |
+
+#### ロード後のテーブル構成
+
+GA4 events は実際の GA4 BigQuery Export と同じ日付シャーディング形式で作成されます。
+
+```
+{dataset}/
+├── events_20250101     # GA4 events（日別テーブル）
+├── events_20250102
+├── ...
+├── customers
+├── products
+├── orders
+└── order_items
+```
+
+BigQuery コンソールで確認：
+`https://console.cloud.google.com/bigquery?project=YOUR_PROJECT_ID`
 
 ## 設定ファイル（config.yaml）
 
