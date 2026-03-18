@@ -1,0 +1,26 @@
+date_range:
+  start: "2025-01-01"
+  end: "2025-01-31"
+
+users:
+  total: 1000
+  logged_in_ratio: 0.3
+  daily_active_ratio: 0.15
+  sessions_per_day_range: [1, 3]
+
+funnel:
+  browse_to_view_item: 0.70
+  view_item_to_add_to_cart: 0.30
+  add_to_cart_to_remove: 0.10
+  add_to_cart_to_checkout: 0.60
+  checkout_to_purchase: 0.75
+  promotion_probability: 0.15
+
+output:
+  directory: "./output"
+  file_pattern: "events_{date}.jsonl"
+
+settings:
+  stream_id: "1234567890"
+  currency: "JPY"
+  seed: 42
