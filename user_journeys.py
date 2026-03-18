@@ -12,6 +12,7 @@ from product_catalog import (
     pick_products, pick_product_list, pick_promotion,
     apply_coupon, COUPONS,
 )
+from tables import generate_customer_attrs
 from traffic_sources import (
     pick_traffic_source, build_traffic_source_record,
     build_collected_traffic_source,
@@ -75,19 +76,37 @@ def _referrer_for_source(src: dict) -> str:
     return _REFERRERS.get(src.get("source", ""), "")
 
 
-def create_user_pool(total_users: int, logged_in_ratio: float) -> list[dict]:
-    """Create a pool of simulated users."""
+def create_user_pool(
+    total_users: int,
+    logged_in_ratio: float,
+    sim_start: "date | None" = None,
+) -> list[dict]:
+    """Create a pool of simulated users.
+
+    Logged-in users get customer attributes (name, email, …) via
+    generate_customer_attrs so that customers.csv can be derived directly
+    from the user pool with the same customer_id == user_id key.
+    """
+    from datetime import date as _date
+    if sim_start is None:
+        sim_start = _date.today()
+
     users = []
     for _ in range(total_users):
-        users.append({
-            "user_pseudo_id":       generate_user_pseudo_id(),
-            "user_id":              generate_user_id() if random.random() < logged_in_ratio else None,
-            "device_profile":       pick_device(),
-            "geo_profile":          pick_geo(),
-            "first_touch_source":   pick_traffic_source(),
-            "session_count":        0,
-            "purchase_propensity":  random.betavariate(2, 5),  # skewed low
-        })
+        user_id = generate_user_id() if random.random() < logged_in_ratio else None
+        user = {
+            "user_pseudo_id":      generate_user_pseudo_id(),
+            "user_id":             user_id,
+            "device_profile":      pick_device(),
+            "geo_profile":         pick_geo(),
+            "first_touch_source":  pick_traffic_source(),
+            "session_count":       0,
+            "purchase_propensity": random.betavariate(2, 5),
+        }
+        if user_id:
+            # Merge customer master attributes; customer_id == user_id
+            user.update(generate_customer_attrs(user_id, sim_start))
+        users.append(user)
     return users
 
 
@@ -490,21 +509,34 @@ def generate_session_events(
                         "shipping_value":     ship_fee,
                         "tax_value":          float(tax),
                     }
+                    purchase_datetime = current_time  # capture before _advance
                     events.append(_ev("purchase", purchase_params, items=added, ecommerce=ecommerce))
                     _advance(5, 30)
 
                     purchase_info = {
-                        "user_pseudo_id": user["user_pseudo_id"],
-                        "user_id":        user["user_id"],
-                        "transaction_id": txn_id,
-                        "value":          revenue,
-                        "items":          added,
-                        "currency":       currency,
-                        "session_id":     session_id,
-                        "session_number": session_number,
-                        "device":         device_record,
-                        "geo":            geo_record,
-                        "traffic_source": traffic_src_record,
+                        # --- GA4 linkage keys (must match events exactly) ---
+                        "user_pseudo_id":  user["user_pseudo_id"],
+                        "user_id":         user["user_id"],        # == customers.customer_id
+                        "transaction_id":  txn_id,                 # == orders.order_id
+                        # --- order master fields ---
+                        "order_datetime":  purchase_datetime,
+                        "subtotal":        cart_subtotal,
+                        "coupon_code":     order_coupon,
+                        "discount_amount": discount_total,
+                        "shipping_fee":    ship_fee,
+                        "shipping_tier":   ship_opt["tier"],
+                        "tax_amount":      float(tax),
+                        "total_amount":    revenue,
+                        "payment_type":    payment_type,
+                        "currency":        currency,
+                        # --- order_items fields (item_id == products.product_id) ---
+                        "items":           added,
+                        # --- refund event generation ---
+                        "session_id":      session_id,
+                        "session_number":  session_number,
+                        "device":          device_record,
+                        "geo":             geo_record,
+                        "traffic_source":  traffic_src_record,
                     }
 
     # Add engagement_time_msec to every event
