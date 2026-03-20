@@ -1,24 +1,26 @@
 # ec_demo
 
-GA4（Google Analytics 4）の EC（eコマース）デモデータを生成するプロジェクトです。
+> **[日本語版 README はこちら (README_ja.md)](README_ja.md)**
 
-## プロジェクトの目的・概要
+GA4 (Google Analytics 4) ecommerce demo data generator for BigQuery.
 
-BigQuery 上の GA4 eコマースイベントデータを模したデモデータを生成します。開発・テスト・デモ環境で、本番データを使わずに GA4 データパイプラインの検証や BI ダッシュボードのプロトタイピングを行うことを目的としています。
+## Overview
 
-## 生成されるテーブル一覧
+Generates realistic GA4 BigQuery Export-format ecommerce event data along with relational tables (customers, products, orders, order_items). Designed for development, testing, and demo environments where production data is not available — ideal for validating GA4 data pipelines and prototyping BI dashboards.
 
-| テーブル | ファイル | 形式 | カラム数 | レコード数（目安）|
+## Generated Tables
+
+| Table | File | Format | Columns | Rows (approx.) |
 |---|---|---|---|---|
-| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL（日別） | 20列（リーフ展開70列超） | 約3,600行/日 |
-| customers | `output/customers.csv` | CSV | 8列 | ユーザー数 × ログイン率 |
-| products | `output/products.csv` | CSV | 9列 | 20行（固定） |
-| orders | `output/orders.csv` | CSV | 14列 | GA4 purchase イベント数と一致 |
-| order_items | `output/order_items.csv` | CSV | 8列 | 注文数 × 平均購入点数 |
+| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL (daily) | 20 (70+ leaf) | ~3,600/day |
+| customers | `output/customers.csv` | CSV | 8 | users x login rate |
+| products | `output/products.csv` | CSV | 9 | 20 (fixed) |
+| orders | `output/orders.csv` | CSV | 14 | = GA4 purchase events |
+| order_items | `output/order_items.csv` | CSV | 8 | orders x avg items |
 
-> デフォルト設定（1,000ユーザー・31日間）の実行例：events 113,689行 / customers 301行 / orders 1,059行 / order_items 1,262行
+> Default settings (1,000 users, 31 days): events 113,689 / customers 301 / orders 1,059 / order_items 1,262
 
-### テーブル間の結合キー
+### Join Keys
 
 ```
 customers.customer_id  <->  GA4 events.user_id
@@ -27,103 +29,103 @@ customers.customer_id  <->  GA4 events.user_id
 products.product_id    <->  GA4 events.items[].item_id
                         <->  order_items.product_id
 
-orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
+orders.order_id        <->  GA4 events.transaction_id (purchase events)
                         <->  order_items.order_id
 ```
 
-- GA4 events に `user_id` がない行は匿名ユーザー（ゲスト）によるアクセスで正常
-- customers に登録はあるが GA4 events に現れないユーザー（未訪問会員）も正常
-- customers に登録はあるが orders に現れないユーザー（未購入会員）も正常
+- Events without `user_id` represent anonymous (guest) users — this is expected
+- Customers with no events (non-visiting members) are expected
+- Customers with no orders (non-purchasing members) are expected
 
 ---
 
-## スキーマ詳細
+## Schema Details
 
-### GA4 events（JSONL・BigQuery Export 形式）
+### GA4 events (JSONL, BigQuery Export format)
 
-#### トップレベル列（20列）
+#### Top-level columns (20)
 
-| カラム | 型 | NULLABLE | 説明 |
+| Column | Type | NULLABLE | Description |
 |---|---|---|---|
 | `event_date` | STRING | NO | YYYYMMDD |
-| `event_timestamp` | INTEGER | NO | マイクロ秒 UTC |
-| `event_name` | STRING | NO | イベント名（下記19種） |
-| `user_pseudo_id` | STRING | NO | GA4 クライアントID |
-| `user_id` | STRING | YES | ログインユーザーID（未ログインは null） |
-| `platform` | STRING | NO | "WEB" 固定 |
-| `stream_id` | STRING | NO | GA4 ストリームID |
-| `user_first_touch_timestamp` | INTEGER | YES | マイクロ秒 UTC |
-| `event_params` | RECORD REPEATED | NO | イベントパラメータ（下記24種） |
-| `user_properties` | RECORD REPEATED | NO | ユーザープロパティ |
-| `device` | RECORD | NO | デバイス情報 |
-| `geo` | RECORD | NO | 地理情報 |
-| `traffic_source` | RECORD | NO | ユーザー初回流入元 |
-| `collected_traffic_source` | RECORD | YES | セッション単位の流入元 |
-| `session_traffic_source_last_click` | RECORD | YES | セッションのラストクリック流入元 |
-| `items` | RECORD REPEATED | YES | 商品情報（ecommerce イベントのみ） |
-| `ecommerce` | RECORD | YES | purchase イベントのみ |
-| `batch_page_id` | INTEGER | YES | ページ遷移ごとにインクリメント |
-| `batch_ordering_id` | INTEGER | YES | バッチごとにインクリメント |
-| `batch_event_index` | INTEGER | YES | バッチ内のイベント連番 |
+| `event_timestamp` | INTEGER | NO | Microseconds UTC |
+| `event_name` | STRING | NO | Event name (19 types below) |
+| `user_pseudo_id` | STRING | NO | GA4 client ID |
+| `user_id` | STRING | YES | Logged-in user ID (null if anonymous) |
+| `platform` | STRING | NO | "WEB" (fixed) |
+| `stream_id` | STRING | NO | GA4 stream ID |
+| `user_first_touch_timestamp` | INTEGER | YES | Microseconds UTC |
+| `event_params` | RECORD REPEATED | NO | Event parameters (24 keys below) |
+| `user_properties` | RECORD REPEATED | NO | User properties |
+| `device` | RECORD | NO | Device information |
+| `geo` | RECORD | NO | Geographic information |
+| `traffic_source` | RECORD | NO | User first-touch traffic source |
+| `collected_traffic_source` | RECORD | YES | Session-level traffic source |
+| `session_traffic_source_last_click` | RECORD | YES | Session last-click traffic source |
+| `items` | RECORD REPEATED | YES | Product info (ecommerce events only) |
+| `ecommerce` | RECORD | YES | Purchase events only |
+| `batch_page_id` | INTEGER | YES | Increments per page transition |
+| `batch_ordering_id` | INTEGER | YES | Increments per batch |
+| `batch_event_index` | INTEGER | YES | Event sequence within a batch |
 
-#### イベント種別（19種）
+#### Event Types (19)
 
-| イベント名 | 分類 | 説明 |
+| Event Name | Category | Description |
 |---|---|---|
-| `first_visit` | 自動収集 | ユーザーの初回訪問 |
-| `session_start` | 自動収集 | セッション開始 |
-| `page_view` | 自動収集 | ページ表示 |
-| `sign_up` | 推奨 | 会員登録 |
-| `login` | 推奨 | ログイン |
-| `search` | 推奨 | サイト内検索 |
-| `view_promotion` | EC推奨 | プロモーション表示 |
-| `select_promotion` | EC推奨 | プロモーションクリック |
-| `view_item_list` | EC推奨 | 商品一覧表示 |
-| `select_item` | EC推奨 | 商品一覧からクリック |
-| `view_item` | EC推奨 | 商品詳細表示 |
-| `add_to_cart` | EC推奨 | カートに追加 |
-| `remove_from_cart` | EC推奨 | カートから削除 |
-| `view_cart` | EC推奨 | カート表示 |
-| `begin_checkout` | EC推奨 | チェックアウト開始 |
-| `add_shipping_info` | EC推奨 | 配送方法選択 |
-| `add_payment_info` | EC推奨 | 支払方法選択 |
-| `purchase` | EC推奨 | 購入完了 |
-| `refund` | EC推奨 | 返金（購入の約5%が3〜14日後） |
+| `first_visit` | Auto-collected | User's first visit |
+| `session_start` | Auto-collected | Session start |
+| `page_view` | Auto-collected | Page view |
+| `sign_up` | Recommended | User registration |
+| `login` | Recommended | Login |
+| `search` | Recommended | Site search |
+| `view_promotion` | EC Recommended | Promotion impression |
+| `select_promotion` | EC Recommended | Promotion click |
+| `view_item_list` | EC Recommended | Product list view |
+| `select_item` | EC Recommended | Product list click |
+| `view_item` | EC Recommended | Product detail view |
+| `add_to_cart` | EC Recommended | Add to cart |
+| `remove_from_cart` | EC Recommended | Remove from cart |
+| `view_cart` | EC Recommended | Cart view |
+| `begin_checkout` | EC Recommended | Checkout start |
+| `add_shipping_info` | EC Recommended | Shipping method selection |
+| `add_payment_info` | EC Recommended | Payment method selection |
+| `purchase` | EC Recommended | Purchase complete |
+| `refund` | EC Recommended | Refund (~5% of purchases, 3-14 days later) |
 
-#### event_params キー（24種）
+#### event_params Keys (24)
 
-| key | value型 | 主な対象イベント |
+| Key | Value Type | Primary Events |
 |---|---|---|
-| `ga_session_id` | int | 全イベント |
-| `ga_session_number` | int | 全イベント |
-| `session_engaged` | int | 全イベント |
-| `engagement_time_msec` | int | 全イベント |
-| `entrances` | int | session_start、ランディング page_view |
-| `page_location` | string | page_view、view_item |
-| `page_title` | string | page_view、view_item |
+| `ga_session_id` | int | All events |
+| `ga_session_number` | int | All events |
+| `session_engaged` | int | All events |
+| `engagement_time_msec` | int | All events |
+| `entrances` | int | session_start, landing page_view |
+| `page_location` | string | page_view, view_item |
+| `page_title` | string | page_view, view_item |
 | `page_referrer` | string | page_view |
-| `search_term` | string | search、view_item_list（検索結果） |
-| `item_list_id` | string | view_item_list、select_item |
-| `item_list_name` | string | view_item_list、select_item |
-| `currency` | string | ecommerce イベント全般 |
-| `value` | float | ecommerce イベント全般 |
-| `coupon` | string | begin_checkout〜purchase |
-| `shipping` | float | add_shipping_info、purchase |
-| `shipping_tier` | string | add_shipping_info（standard / express） |
+| `search_term` | string | search, view_item_list (search results) |
+| `item_list_id` | string | view_item_list, select_item |
+| `item_list_name` | string | view_item_list, select_item |
+| `currency` | string | All ecommerce events |
+| `value` | float | All ecommerce events |
+| `coupon` | string | begin_checkout through purchase |
+| `shipping` | float | add_shipping_info, purchase |
+| `shipping_tier` | string | add_shipping_info (standard / express) |
 | `tax` | float | purchase |
-| `transaction_id` | string | purchase、refund |
+| `transaction_id` | string | purchase, refund |
 | `payment_type` | string | add_payment_info |
-| `promotion_id` | string | view_promotion、select_promotion |
-| `promotion_name` | string | view_promotion、select_promotion、purchase |
-| `creative_name` | string | view_promotion、select_promotion |
-| `creative_slot` | string | view_promotion、select_promotion |
-| `method` | string | sign_up、login |
+| `promotion_id` | string | view_promotion, select_promotion |
+| `promotion_name` | string | view_promotion, select_promotion, purchase |
+| `creative_name` | string | view_promotion, select_promotion |
+| `creative_slot` | string | view_promotion, select_promotion |
+| `method` | string | sign_up, login |
 
-#### items 列（17列）
+#### items columns (17)
 
-| カラム | 型 | NULLABLE | 備考 |
+| Column | Type | NULLABLE | Notes |
 |---|---|---|---|
-| `item_id` | STRING | NO | SKU001〜SKU020 |
+| `item_id` | STRING | NO | SKU001-SKU020 |
 | `item_name` | STRING | NO | |
 | `item_brand` | STRING | NO | |
 | `item_category` | STRING | NO | |
@@ -131,30 +133,30 @@ orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
 | `item_category3` | STRING | NO | |
 | `price` | FLOAT | NO | |
 | `quantity` | INTEGER | NO | |
-| `index` | INTEGER | YES | リスト内表示順 |
+| `index` | INTEGER | YES | Position in list |
 | `coupon` | STRING | YES | |
-| `discount` | FLOAT | YES | クーポン割引額 |
-| `item_list_id` | STRING | YES | view_item_list / select_item のみ |
-| `item_list_name` | STRING | YES | view_item_list / select_item のみ |
+| `discount` | FLOAT | YES | Coupon discount amount |
+| `item_list_id` | STRING | YES | view_item_list / select_item only |
+| `item_list_name` | STRING | YES | view_item_list / select_item only |
 | `promotion_id` | STRING | YES | |
 | `promotion_name` | STRING | YES | |
 | `creative_name` | STRING | YES | |
 | `creative_slot` | STRING | YES | |
 
-#### ecommerce 列（6列、purchase イベントのみ）
+#### ecommerce columns (6, purchase events only)
 
-| カラム | 型 | 説明 |
+| Column | Type | Description |
 |---|---|---|
 | `transaction_id` | STRING | |
-| `purchase_revenue` | FLOAT | クーポン割引後・送料込み |
+| `purchase_revenue` | FLOAT | After coupon discount, including shipping |
 | `total_item_quantity` | INTEGER | |
 | `unique_items` | INTEGER | |
 | `shipping_value` | FLOAT | |
 | `tax_value` | FLOAT | |
 
-#### device 列（11列）
+#### device columns (11)
 
-| カラム | 型 | NULLABLE |
+| Column | Type | NULLABLE |
 |---|---|---|
 | `category` | STRING | NO | mobile / desktop / tablet |
 | `operating_system` | STRING | NO | |
@@ -163,24 +165,24 @@ orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
 | `mobile_brand_name` | STRING | YES | |
 | `mobile_model_name` | STRING | YES | |
 | `mobile_marketing_name` | STRING | YES | |
-| `is_limited_ad_tracking` | STRING | YES | モバイルのみ |
+| `is_limited_ad_tracking` | STRING | YES | Mobile only |
 | `web_info.browser` | STRING | NO | |
 | `web_info.browser_version` | STRING | NO | |
 | `web_info.hostname` | STRING | NO | |
 
-#### geo 列（5列）
+#### geo columns (5)
 
 `continent` / `sub_continent` / `country` / `region` / `city`
 
-#### traffic_source 列（3列、ユーザー初回流入）
+#### traffic_source columns (3, user first-touch)
 
 `source` / `medium` / `name`
 
-#### collected_traffic_source 列（5列、セッション単位）
+#### collected_traffic_source columns (5, session-level)
 
-`manual_source` / `manual_medium` / `manual_campaign_name` / `manual_content`（nullable）/ `gclid`（nullable）
+`manual_source` / `manual_medium` / `manual_campaign_name` / `manual_content` (nullable) / `gclid` (nullable)
 
-#### session_traffic_source_last_click 列（セッションのラストクリック流入元）
+#### session_traffic_source_last_click columns (session last-click source)
 
 ```
 session_traffic_source_last_click
@@ -188,44 +190,44 @@ session_traffic_source_last_click
 │   ├── source
 │   ├── medium
 │   ├── campaign_name
-│   └── content（nullable）
-└── google_ads_campaign（Google CPC の場合のみ）
+│   └── content (nullable)
+└── google_ads_campaign (Google CPC only)
     ├── customer_id
     ├── account_name
     ├── campaign_id / campaign_name
     └── ad_group_id / ad_group_name
 ```
 
-#### batch 列（3列、イベント発生順の判定に使用）
+#### batch columns (3, for determining event order)
 
-| カラム | 型 | 説明 |
+| Column | Type | Description |
 |---|---|---|
-| `batch_page_id` | INTEGER | ページ遷移ごとにインクリメント。同一ページ内のイベントは同じ値 |
-| `batch_ordering_id` | INTEGER | バッチごとにインクリメント |
-| `batch_event_index` | INTEGER | バッチ内のイベント連番（0始まり） |
+| `batch_page_id` | INTEGER | Increments per page transition; events on the same page share the same value |
+| `batch_ordering_id` | INTEGER | Increments per batch |
+| `batch_event_index` | INTEGER | Event sequence within a batch (0-based) |
 
-> `event_timestamp` はGA4サーバーへの到達時刻であり、同時到着するケースがあるため、イベントの発生順の判定には `event_timestamp, batch_page_id, batch_ordering_id, batch_event_index` の順で使用する。
+> `event_timestamp` is the arrival time at the GA4 server, and multiple events can arrive simultaneously. To determine the correct event order, use `event_timestamp, batch_page_id, batch_ordering_id, batch_event_index` in that priority.
 
 ---
 
-### customers（8列）
+### customers (8 columns)
 
-| カラム | 型 | NULLABLE | 説明 |
+| Column | Type | NULLABLE | Description |
 |---|---|---|---|
 | `customer_id` | STRING | NO | **= GA4 `user_id`** / **= orders.customer_id** |
-| `name` | STRING | NO | 氏名（日本語） |
+| `name` | STRING | NO | Full name (Japanese) |
 | `email` | STRING | NO | |
 | `gender` | STRING | NO | male / female |
-| `age` | INTEGER | NO | 18〜65 |
-| `prefecture` | STRING | NO | 都道府県 |
-| `registration_date` | DATE | NO | シミュレーション開始の30〜1095日前 |
-| `membership_rank` | STRING | NO | regular（70%）/ silver（20%）/ gold（10%） |
+| `age` | INTEGER | NO | 18-65 |
+| `prefecture` | STRING | NO | Prefecture |
+| `registration_date` | DATE | NO | 30-1,095 days before simulation start |
+| `membership_rank` | STRING | NO | regular (70%) / silver (20%) / gold (10%) |
 
 ---
 
-### products（9列）
+### products (9 columns)
 
-| カラム | 型 | NULLABLE | 説明 |
+| Column | Type | NULLABLE | Description |
 |---|---|---|---|
 | `product_id` | STRING | NO | **= GA4 `items[].item_id`** / **= order_items.product_id** |
 | `product_name` | STRING | NO | |
@@ -233,74 +235,74 @@ session_traffic_source_last_click
 | `category` | STRING | NO | |
 | `category2` | STRING | NO | |
 | `category3` | STRING | NO | |
-| `price` | INTEGER | NO | 円（税抜） |
-| `tax_rate` | FLOAT | NO | 0.10 固定 |
-| `stock_quantity` | INTEGER | NO | 0〜500 |
+| `price` | INTEGER | NO | JPY (tax-exclusive) |
+| `tax_rate` | FLOAT | NO | 0.10 (fixed) |
+| `stock_quantity` | INTEGER | NO | 0-500 |
 
 ---
 
-### orders（14列）
+### orders (14 columns)
 
-| カラム | 型 | NULLABLE | 説明 |
+| Column | Type | NULLABLE | Description |
 |---|---|---|---|
 | `order_id` | STRING | NO | **= GA4 `transaction_id`** / **= order_items.order_id** |
-| `customer_id` | STRING | YES | **= customers.customer_id**（ゲスト購入は空白） |
+| `customer_id` | STRING | YES | **= customers.customer_id** (blank for guest purchases) |
 | `order_date` | DATE | NO | |
 | `order_datetime` | TIMESTAMP | NO | |
 | `status` | STRING | NO | completed / refunded |
-| `subtotal` | INTEGER | NO | クーポン適用前・送料除く |
+| `subtotal` | INTEGER | NO | Before coupon, excluding shipping |
 | `coupon_code` | STRING | YES | |
-| `discount_amount` | INTEGER | NO | クーポン割引額 |
-| `shipping_fee` | INTEGER | NO | 5,000円以上で0円 |
+| `discount_amount` | INTEGER | NO | Coupon discount amount |
+| `shipping_fee` | INTEGER | NO | Free for orders >= 5,000 JPY |
 | `shipping_tier` | STRING | NO | standard / express |
-| `tax_amount` | INTEGER | NO | 消費税10% |
-| `total_amount` | INTEGER | NO | 割引後・送料・税込み |
+| `tax_amount` | INTEGER | NO | 10% consumption tax |
+| `total_amount` | INTEGER | NO | After discount, including shipping and tax |
 | `payment_type` | STRING | NO | credit_card / debit_card / convenience_store / bank_transfer / pay_later |
-| `currency` | STRING | NO | JPY 固定 |
+| `currency` | STRING | NO | JPY (fixed) |
 
 ---
 
-### order_items（8列）
+### order_items (8 columns)
 
-| カラム | 型 | NULLABLE | 説明 |
+| Column | Type | NULLABLE | Description |
 |---|---|---|---|
-| `order_item_id` | STRING | NO | `{order_id}-{連番}` |
+| `order_item_id` | STRING | NO | `{order_id}-{sequence}` |
 | `order_id` | STRING | NO | **= orders.order_id** |
 | `product_id` | STRING | NO | **= products.product_id** |
 | `product_name` | STRING | NO | |
-| `unit_price` | INTEGER | NO | 税抜単価 |
+| `unit_price` | INTEGER | NO | Tax-exclusive unit price |
 | `quantity` | INTEGER | NO | |
-| `discount_amount` | INTEGER | NO | 当該明細の割引額 |
+| `discount_amount` | INTEGER | NO | Discount for this line item |
 | `line_total` | INTEGER | NO | `unit_price * quantity - discount_amount` |
 
 ---
 
-## データマートビュー
+## Data Mart Views
 
-`sql/mart/` 配下にデータマート用のビュー定義SQLを格納しています。
+View definitions for data marts are stored under `sql/mart/`.
 
-### v_events_flat（イベントフラット化ビュー）
+### v_events_flat (Event Flattening View)
 
-GA4 BigQuery Export のネスト構造をフラット化し、セッション単位の情報を付与した基盤ビューです。後続のセッションマート・ファネルマート・売上マート等はこのビューを `FROM` して作成します。
+A base view that flattens the nested GA4 BigQuery Export structure and enriches each event row with session-level attributes. Downstream marts (session, funnel, revenue, user) should query from this view.
 
-**主な処理:**
+**Key transformations:**
 
-1. `event_params` の各キーを個別カラムに展開（24キー）
-2. `device`, `geo`, `traffic_source`, `collected_traffic_source`, `session_traffic_source_last_click` をフラット化
-3. NULL同等値（`(not set)`, `(none)`, `(not provided)`, 空文字列）を NULL に正規化（`(direct)` はそのまま保持）
-4. セッション内イベント発生順（`event_sequence_number`）を `event_timestamp, batch_page_id, batch_ordering_id, batch_event_index` で判定
-5. セッションレベル属性を全イベント行に付与:
-   - `session_traffic_source/medium/campaign/content`: `collected_traffic_source` の直近の非NULL値（source/medium/campaign/content を同一イベントから取得し整合性を保証）
-   - `session_landing_page`: `entrances=1` の `page_location`
-   - `session_duration_sec`, `session_has_purchase` 等
+1. Pivots each `event_params` key into individual columns (24 keys)
+2. Flattens `device`, `geo`, `traffic_source`, `collected_traffic_source`, `session_traffic_source_last_click`
+3. Normalizes NULL-equivalent values (`(not set)`, `(none)`, `(not provided)`, empty string) to NULL — `(direct)` is preserved as-is
+4. Assigns `event_sequence_number` within each session using `event_timestamp, batch_page_id, batch_ordering_id, batch_event_index`
+5. Attaches session-level attributes to every event row:
+   - `session_traffic_source/medium/campaign/content`: latest non-NULL values from `collected_traffic_source`, fetched from the same event row to guarantee cross-field consistency
+   - `session_landing_page`: `page_location` where `entrances=1`
+   - `session_duration_sec`, `session_has_purchase`, etc.
 
-**ファイル:** `sql/mart/v_events_flat.sql`
+**File:** `sql/mart/v_events_flat.sql`
 
 ---
 
-## セットアップと実行
+## Setup and Usage
 
-### 1. 仮想環境の作成・依存ライブラリのインストール
+### 1. Create Virtual Environment and Install Dependencies
 
 ```bash
 python3 -m venv .venv
@@ -308,31 +310,31 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. デモデータの生成
+### 2. Generate Demo Data
 
 ```bash
 python generate.py
 ```
 
-オプションで期間・ユーザー数・シードを上書きできます。
+Override period, user count, or seed via command-line options:
 
 ```bash
 python generate.py --start 2025-01-01 --end 2025-03-31 --users 5000 --seed 123
 ```
 
-| オプション | デフォルト | 説明 |
+| Option | Default | Description |
 |---|---|---|
-| `-c`, `--config` | `config.yaml` | 設定ファイルパス |
-| `--start` | config の `date_range.start` | 開始日（YYYY-MM-DD） |
-| `--end` | config の `date_range.end` | 終了日（YYYY-MM-DD） |
-| `--users` | config の `users.total` | ユーザー総数 |
-| `--seed` | config の `settings.seed` | 乱数シード |
+| `-c`, `--config` | `config.yaml` | Config file path |
+| `--start` | config `date_range.start` | Start date (YYYY-MM-DD) |
+| `--end` | config `date_range.end` | End date (YYYY-MM-DD) |
+| `--users` | config `users.total` | Total user count |
+| `--seed` | config `settings.seed` | Random seed |
 
-実行後に以下のファイルが生成されます。
+Generated files:
 
 ```
 output/
-├── events_20250101.jsonl   # GA4 events（日別 JSONL）
+├── events_20250101.jsonl   # GA4 events (daily JSONL)
 ├── events_20250102.jsonl
 ├── ...
 ├── customers.csv
@@ -341,39 +343,39 @@ output/
 └── order_items.csv
 ```
 
-### 3. BigQuery へのロード
+### 3. Load into BigQuery
 
-#### 必要なもの
+#### Prerequisites
 
-| 項目 | 説明 | 例 |
+| Item | Description | Example |
 |---|---|---|
-| GCP プロジェクト ID | BigQuery を利用するプロジェクト | `my-project-123` |
-| データセット名 | 作成するデータセット（存在しない場合は自動作成） | `ec_demo` |
-| ロケーション | データセットのリージョン | `asia-northeast1`（東京）/ `US` / `EU` |
-| 認証 | 下記のいずれか | - |
+| GCP Project ID | Project with BigQuery enabled | `my-project-123` |
+| Dataset name | Dataset to create (auto-created if missing) | `ec_demo` |
+| Location | Dataset region | `asia-northeast1` (Tokyo) / `US` / `EU` |
+| Authentication | One of the methods below | - |
 
-#### 認証の設定
+#### Authentication
 
-**方法 A: gcloud CLI（ローカル実行推奨）**
+**Option A: gcloud CLI (recommended for local use)**
 
 ```bash
-# gcloud CLI のインストールがまだの場合
+# Install gcloud CLI if not already installed
 # https://cloud.google.com/sdk/docs/install
 
 gcloud auth application-default login
 ```
 
-**方法 B: サービスアカウントキー**
+**Option B: Service account key**
 
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
 ```
 
-サービスアカウントに必要な IAM ロール：
-- `BigQuery Data Editor`（データセット・テーブルの作成・書き込み）
-- `BigQuery Job User`（ロードジョブの実行）
+Required IAM roles for the service account:
+- `BigQuery Data Editor` (create/write datasets and tables)
+- `BigQuery Job User` (run load jobs)
 
-#### ロード実行
+#### Run the Loader
 
 ```bash
 python bigquery_load.py \
@@ -382,7 +384,7 @@ python bigquery_load.py \
   --location asia-northeast1
 ```
 
-サービスアカウントキーを明示する場合：
+With an explicit service account key:
 
 ```bash
 python bigquery_load.py \
@@ -392,21 +394,21 @@ python bigquery_load.py \
   --key-file /path/to/service-account-key.json
 ```
 
-| オプション | デフォルト | 説明 |
+| Option | Default | Description |
 |---|---|---|
-| `--project` | （必須） | GCP プロジェクト ID |
-| `--dataset` | （必須） | BigQuery データセット名 |
-| `--location` | `asia-northeast1` | データセットのロケーション |
-| `--output-dir` | `./output` | 生成ファイルのディレクトリ |
-| `--key-file` | なし（ADC使用） | サービスアカウントキーのパス |
+| `--project` | (required) | GCP project ID |
+| `--dataset` | (required) | BigQuery dataset name |
+| `--location` | `asia-northeast1` | Dataset location |
+| `--output-dir` | `./output` | Directory containing generated files |
+| `--key-file` | None (uses ADC) | Path to service account key JSON |
 
-#### ロード後のテーブル構成
+#### Table Layout After Loading
 
-GA4 events は実際の GA4 BigQuery Export と同じ日付シャーディング形式で作成されます。
+GA4 events are created as date-sharded tables, matching the real GA4 BigQuery Export format.
 
 ```
 {dataset}/
-├── events_20250101     # GA4 events（日別テーブル）
+├── events_20250101     # GA4 events (daily tables)
 ├── events_20250102
 ├── ...
 ├── customers
@@ -415,36 +417,36 @@ GA4 events は実際の GA4 BigQuery Export と同じ日付シャーディング
 └── order_items
 ```
 
-### 4. データマートビューの作成
+### 4. Create Data Mart Views
 
-BigQuery にテーブルをロードした後、データマートビューを作成します。
+After loading tables into BigQuery, create the data mart views.
 
 ```bash
-# PROJECT_ID.DATASET を実際の値に置換して実行
+# Replace PROJECT_ID.DATASET with your actual values
 sed 's/PROJECT_ID\.DATASET/YOUR_PROJECT_ID.ec_demo/g' sql/mart/v_events_flat.sql \
   | bq query --use_legacy_sql=false
 ```
 
-または BigQuery コンソールで `sql/mart/v_events_flat.sql` の内容を貼り付け、`PROJECT_ID.DATASET` を置換して実行してください。
+Alternatively, paste the contents of `sql/mart/v_events_flat.sql` into the BigQuery console and replace `PROJECT_ID.DATASET` manually.
 
-#### ビュー作成後のデータセット構成
+#### Dataset Layout After View Creation
 
 ```
 {dataset}/
-├── events_20250101     # GA4 events（日別テーブル）
+├── events_20250101     # GA4 events (daily tables)
 ├── events_20250102
 ├── ...
 ├── customers
 ├── products
 ├── orders
 ├── order_items
-└── v_events_flat       # イベントフラット化ビュー
+└── v_events_flat       # Event flattening view
 ```
 
-BigQuery コンソールで確認：
+Verify in the BigQuery console:
 `https://console.cloud.google.com/bigquery?project=YOUR_PROJECT_ID`
 
-## 設定ファイル（config.yaml）
+## Configuration (config.yaml)
 
 ```yaml
 date_range:
@@ -452,9 +454,9 @@ date_range:
   end: "2025-01-31"
 
 users:
-  total: 1000               # ユーザープール総数
-  logged_in_ratio: 0.3      # ログインユーザーの割合
-  daily_active_ratio: 0.15  # 1日あたりのアクティブユーザー率
+  total: 1000               # Total user pool size
+  logged_in_ratio: 0.3      # Ratio of logged-in users
+  daily_active_ratio: 0.15  # Daily active user rate
   sessions_per_day_range: [1, 3]
 
 funnel:
@@ -474,18 +476,18 @@ settings:
   seed: 42
 ```
 
-## ファイル構成
+## File Structure
 
-| ファイル | 説明 |
+| File | Description |
 |---|---|
-| `generate.py` | メインエントリーポイント |
-| `user_journeys.py` | セッション・イベント生成ロジック |
-| `product_catalog.py` | 商品マスタ・クーポン定義 |
-| `tables.py` | CSV テーブル生成（customers / products / orders / order_items） |
-| `ga4_schema.py` | GA4 BigQuery Export スキーマのビルダー |
-| `traffic_sources.py` | 流入元データ |
-| `device_geo.py` | デバイス・地理データ |
-| `utils.py` | ID生成・タイムスタンプ変換ユーティリティ |
-| `config.yaml` | 生成パラメータ設定 |
-| `bigquery_load.py` | BigQuery ローダー |
-| `sql/mart/v_events_flat.sql` | イベントフラット化ビュー定義 |
+| `generate.py` | Main entry point |
+| `user_journeys.py` | Session and event generation logic |
+| `product_catalog.py` | Product master and coupon definitions |
+| `tables.py` | CSV table generation (customers / products / orders / order_items) |
+| `ga4_schema.py` | GA4 BigQuery Export schema builder |
+| `traffic_sources.py` | Traffic source data |
+| `device_geo.py` | Device and geographic data |
+| `utils.py` | ID generation and timestamp utilities |
+| `config.yaml` | Generation parameter settings |
+| `bigquery_load.py` | BigQuery loader |
+| `sql/mart/v_events_flat.sql` | Event flattening view definition |
