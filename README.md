@@ -10,25 +10,25 @@ BigQuery 上の GA4 eコマースイベントデータを模したデモデー�
 
 | テーブル | ファイル | 形式 | カラム数 | レコード数（目安）|
 |---|---|---|---|---|
-| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL（日別） | 16列（リーフ展開61列） | 約3,600行/日 |
+| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL（日別） | 20列（リーフ展開70列超） | 約3,600行/日 |
 | customers | `output/customers.csv` | CSV | 8列 | ユーザー数 × ログイン率 |
 | products | `output/products.csv` | CSV | 9列 | 20行（固定） |
 | orders | `output/orders.csv` | CSV | 14列 | GA4 purchase イベント数と一致 |
 | order_items | `output/order_items.csv` | CSV | 8列 | 注文数 × 平均購入点数 |
 
-> デフォルト設定（1,000ユーザー・31日間）の実行例：events 113,268行 / customers 301行 / orders 1,020行 / order_items 1,188行
+> デフォルト設定（1,000ユーザー・31日間）の実行例：events 113,689行 / customers 301行 / orders 1,059行 / order_items 1,262行
 
 ### テーブル間の結合キー
 
 ```
-customers.customer_id  ←→  GA4 events.user_id
-                        ←→  orders.customer_id
+customers.customer_id  <->  GA4 events.user_id
+                        <->  orders.customer_id
 
-products.product_id    ←→  GA4 events.items[].item_id
-                        ←→  order_items.product_id
+products.product_id    <->  GA4 events.items[].item_id
+                        <->  order_items.product_id
 
-orders.order_id        ←→  GA4 events.transaction_id（purchaseイベント）
-                        ←→  order_items.order_id
+orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
+                        <->  order_items.order_id
 ```
 
 - GA4 events に `user_id` がない行は匿名ユーザー（ゲスト）によるアクセスで正常
@@ -41,7 +41,7 @@ orders.order_id        ←→  GA4 events.transaction_id（purchaseイベント�
 
 ### GA4 events（JSONL・BigQuery Export 形式）
 
-#### トップレベル列（16列）
+#### トップレベル列（20列）
 
 | カラム | 型 | NULLABLE | 説明 |
 |---|---|---|---|
@@ -59,8 +59,12 @@ orders.order_id        ←→  GA4 events.transaction_id（purchaseイベント�
 | `geo` | RECORD | NO | 地理情報 |
 | `traffic_source` | RECORD | NO | ユーザー初回流入元 |
 | `collected_traffic_source` | RECORD | YES | セッション単位の流入元 |
+| `session_traffic_source_last_click` | RECORD | YES | セッションのラストクリック流入元 |
 | `items` | RECORD REPEATED | YES | 商品情報（ecommerce イベントのみ） |
 | `ecommerce` | RECORD | YES | purchase イベントのみ |
+| `batch_page_id` | INTEGER | YES | ページ遷移ごとにインクリメント |
+| `batch_ordering_id` | INTEGER | YES | バッチごとにインクリメント |
+| `batch_event_index` | INTEGER | YES | バッチ内のイベント連番 |
 
 #### イベント種別（19種）
 
@@ -172,9 +176,35 @@ orders.order_id        ←→  GA4 events.transaction_id（purchaseイベント�
 
 `source` / `medium` / `name`
 
-#### collected_traffic_source 列（4列、セッション単位）
+#### collected_traffic_source 列（5列、セッション単位）
 
-`manual_source` / `manual_medium` / `manual_campaign_name` / `gclid`（nullable）
+`manual_source` / `manual_medium` / `manual_campaign_name` / `manual_content`（nullable）/ `gclid`（nullable）
+
+#### session_traffic_source_last_click 列（セッションのラストクリック流入元）
+
+```
+session_traffic_source_last_click
+├── manual_campaign
+│   ├── source
+│   ├── medium
+│   ├── campaign_name
+│   └── content（nullable）
+└── google_ads_campaign（Google CPC の場合のみ）
+    ├── customer_id
+    ├── account_name
+    ├── campaign_id / campaign_name
+    └── ad_group_id / ad_group_name
+```
+
+#### batch 列（3列、イベント発生順の判定に使用）
+
+| カラム | 型 | 説明 |
+|---|---|---|
+| `batch_page_id` | INTEGER | ページ遷移ごとにインクリメント。同一ページ内のイベントは同じ値 |
+| `batch_ordering_id` | INTEGER | バッチごとにインクリメント |
+| `batch_event_index` | INTEGER | バッチ内のイベント連番（0始まり） |
+
+> `event_timestamp` はGA4サーバーへの到達時刻であり、同時到着するケースがあるため、イベントの発生順の判定には `event_timestamp, batch_page_id, batch_ordering_id, batch_event_index` の順で使用する。
 
 ---
 
@@ -241,15 +271,40 @@ orders.order_id        ←→  GA4 events.transaction_id（purchaseイベント�
 | `unit_price` | INTEGER | NO | 税抜単価 |
 | `quantity` | INTEGER | NO | |
 | `discount_amount` | INTEGER | NO | 当該明細の割引額 |
-| `line_total` | INTEGER | NO | `unit_price × quantity - discount_amount` |
+| `line_total` | INTEGER | NO | `unit_price * quantity - discount_amount` |
+
+---
+
+## データマートビュー
+
+`sql/mart/` 配下にデータマート用のビュー定義SQLを格納しています。
+
+### v_events_flat（イベントフラット化ビュー）
+
+GA4 BigQuery Export のネスト構造をフラット化し、セッション単位の情報を付与した基盤ビューです。後続のセッションマート・ファネルマート・売上マート等はこのビューを `FROM` して作成します。
+
+**主な処理:**
+
+1. `event_params` の各キーを個別カラムに展開（24キー）
+2. `device`, `geo`, `traffic_source`, `collected_traffic_source`, `session_traffic_source_last_click` をフラット化
+3. NULL同等値（`(not set)`, `(none)`, `(not provided)`, 空文字列）を NULL に正規化（`(direct)` はそのまま保持）
+4. セッション内イベント発生順（`event_sequence_number`）を `event_timestamp, batch_page_id, batch_ordering_id, batch_event_index` で判定
+5. セッションレベル属性を全イベント行に付与:
+   - `session_traffic_source/medium/campaign/content`: `collected_traffic_source` の直近の非NULL値（source/medium/campaign/content を同一イベントから取得し整合性を保証）
+   - `session_landing_page`: `entrances=1` の `page_location`
+   - `session_duration_sec`, `session_has_purchase` 等
+
+**ファイル:** `sql/mart/v_events_flat.sql`
 
 ---
 
 ## セットアップと実行
 
-### 1. 依存ライブラリのインストール
+### 1. 仮想環境の作成・依存ライブラリのインストール
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -295,7 +350,7 @@ output/
 | GCP プロジェクト ID | BigQuery を利用するプロジェクト | `my-project-123` |
 | データセット名 | 作成するデータセット（存在しない場合は自動作成） | `ec_demo` |
 | ロケーション | データセットのリージョン | `asia-northeast1`（東京）/ `US` / `EU` |
-| 認証 | 下記のいずれか | — |
+| 認証 | 下記のいずれか | - |
 
 #### 認証の設定
 
@@ -360,6 +415,32 @@ GA4 events は実際の GA4 BigQuery Export と同じ日付シャーディング
 └── order_items
 ```
 
+### 4. データマートビューの作成
+
+BigQuery にテーブルをロードした後、データマートビューを作成します。
+
+```bash
+# PROJECT_ID.DATASET を実際の値に置換して実行
+sed 's/PROJECT_ID\.DATASET/YOUR_PROJECT_ID.ec_demo/g' sql/mart/v_events_flat.sql \
+  | bq query --use_legacy_sql=false
+```
+
+または BigQuery コンソールで `sql/mart/v_events_flat.sql` の内容を貼り付け、`PROJECT_ID.DATASET` を置換して実行してください。
+
+#### ビュー作成後のデータセット構成
+
+```
+{dataset}/
+├── events_20250101     # GA4 events（日別テーブル）
+├── events_20250102
+├── ...
+├── customers
+├── products
+├── orders
+├── order_items
+└── v_events_flat       # イベントフラット化ビュー
+```
+
 BigQuery コンソールで確認：
 `https://console.cloud.google.com/bigquery?project=YOUR_PROJECT_ID`
 
@@ -406,3 +487,5 @@ settings:
 | `device_geo.py` | デバイス・地理データ |
 | `utils.py` | ID生成・タイムスタンプ変換ユーティリティ |
 | `config.yaml` | 生成パラメータ設定 |
+| `bigquery_load.py` | BigQuery ローダー |
+| `sql/mart/v_events_flat.sql` | イベントフラット化ビュー定義 |

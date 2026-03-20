@@ -45,6 +45,10 @@ def build_event(
     items: list[dict] = None,
     ecommerce: dict = None,
     privacy_info: dict = None,
+    batch_page_id: int = None,
+    batch_ordering_id: int = None,
+    batch_event_index: int = None,
+    session_traffic_source_last_click: dict = None,
 ) -> dict:
     """Build a complete GA4 event row."""
     event = {
@@ -73,6 +77,14 @@ def build_event(
         event["ecommerce"] = ecommerce
     if privacy_info:
         event["privacy_info"] = privacy_info
+    if batch_page_id is not None:
+        event["batch_page_id"] = batch_page_id
+    if batch_ordering_id is not None:
+        event["batch_ordering_id"] = batch_ordering_id
+    if batch_event_index is not None:
+        event["batch_event_index"] = batch_event_index
+    if session_traffic_source_last_click is not None:
+        event["session_traffic_source_last_click"] = session_traffic_source_last_click
 
     return event
 

@@ -15,7 +15,7 @@ from product_catalog import (
 from tables import generate_customer_attrs
 from traffic_sources import (
     pick_traffic_source, build_traffic_source_record,
-    build_collected_traffic_source,
+    build_collected_traffic_source, build_session_traffic_source_last_click,
 )
 from device_geo import pick_device, pick_geo, build_device_record, build_geo_record
 from ga4_schema import ep, up, build_event
@@ -187,6 +187,23 @@ def generate_session_events(
     geo_record          = build_geo_record(user["geo_profile"])
     traffic_src_record  = build_traffic_source_record(user["first_touch_source"])
     collected_ts        = build_collected_traffic_source(session_src)
+    stslc               = build_session_traffic_source_last_click(session_src)
+
+    # Batch tracking: batch_page_id increments per page, batch_event_index
+    # increments per event within a batch, batch_ordering_id per batch.
+    batch_state = {"page_id": 0, "ordering_id": 0, "event_index": 0}
+
+    def _new_batch():
+        """Start a new batch (triggered by page transitions)."""
+        batch_state["page_id"] += 1
+        batch_state["ordering_id"] += 1
+        batch_state["event_index"] = 0
+
+    def _next_event_index():
+        """Get the next event index within the current batch."""
+        idx = batch_state["event_index"]
+        batch_state["event_index"] += 1
+        return idx
 
     first_touch_ts = nz_datetime_to_event_timestamp(
         session_date if is_first_session
@@ -215,7 +232,9 @@ def generate_session_events(
     def _user_props():
         return [up("user_id", string_value=user["user_id"])] if user["user_id"] else []
 
-    def _ev(name, extra=None, items=None, ecommerce=None):
+    def _ev(name, extra=None, items=None, ecommerce=None, is_page_view=False):
+        if is_page_view:
+            _new_batch()
         return build_event(
             event_name=name,
             event_timestamp=_ts(),
@@ -232,6 +251,10 @@ def generate_session_events(
             user_first_touch_timestamp=first_touch_ts,
             items=items,
             ecommerce=ecommerce,
+            batch_page_id=batch_state["page_id"],
+            batch_ordering_id=batch_state["ordering_id"],
+            batch_event_index=_next_event_index(),
+            session_traffic_source_last_click=stslc,
         )
 
     def _advance(lo=5, hi=60):
@@ -269,7 +292,7 @@ def generate_session_events(
         ep("page_title",    string_value=landing["title"]),
         ep("page_referrer", string_value=ext_referrer),
         ep("entrances",     int_value=1),
-    ]))
+    ], is_page_view=True))
     _advance(10, 60)
 
     prev_url     = landing_url
@@ -289,7 +312,7 @@ def generate_session_events(
             ep("page_title",    string_value=f"「{term}」の検索結果 | Example EC"),
             ep("page_referrer", string_value=prev_url),
             ep("search_term",   string_value=term),
-        ]))
+        ], is_page_view=True))
         _advance(5, 20)
 
         list_items = pick_product_list(random.randint(8, 16),
@@ -313,7 +336,7 @@ def generate_session_events(
             ep("page_location", string_value=page_url),
             ep("page_title",    string_value=page["title"]),
             ep("page_referrer", string_value=prev_url),
-        ]))
+        ], is_page_view=True))
         _advance(10, 90)
         prev_url = page_url
 
@@ -383,7 +406,7 @@ def generate_session_events(
                 ep("page_location", string_value=product_url),
                 ep("page_title",    string_value=f"{it['item_name']} | Example EC"),
                 ep("page_referrer", string_value=prev_url),
-            ]))
+            ], is_page_view=True))
             _advance(2, 5)
 
             view_items = _strip_list_fields([it])
@@ -425,7 +448,7 @@ def generate_session_events(
                 ep("page_location", string_value=cart_url),
                 ep("page_title",    string_value="カート | Example EC"),
                 ep("page_referrer", string_value=prev_url),
-            ]))
+            ], is_page_view=True))
             _advance(2, 5)
             events.append(_ev("view_cart", [
                 ep("currency", string_value=currency),
@@ -443,7 +466,7 @@ def generate_session_events(
                     ep("page_location", string_value=checkout_url),
                     ep("page_title",    string_value="チェックアウト | Example EC"),
                     ep("page_referrer", string_value=prev_url),
-                ]))
+                ], is_page_view=True))
                 _advance(2, 5)
 
                 checkout_params = [

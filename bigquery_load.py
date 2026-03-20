@@ -93,6 +93,7 @@ EVENTS_SCHEMA = [
         bigquery.SchemaField("manual_source",        "STRING"),
         bigquery.SchemaField("manual_medium",        "STRING"),
         bigquery.SchemaField("manual_campaign_name", "STRING"),
+        bigquery.SchemaField("manual_content",       "STRING"),
         bigquery.SchemaField("gclid",                "STRING"),
     ]),
     bigquery.SchemaField("items", "RECORD", mode="REPEATED", fields=[
@@ -121,6 +122,25 @@ EVENTS_SCHEMA = [
         bigquery.SchemaField("unique_items",       "INTEGER"),
         bigquery.SchemaField("shipping_value",     "FLOAT"),
         bigquery.SchemaField("tax_value",          "FLOAT"),
+    ]),
+    bigquery.SchemaField("batch_page_id",      "INTEGER"),
+    bigquery.SchemaField("batch_ordering_id",  "INTEGER"),
+    bigquery.SchemaField("batch_event_index",  "INTEGER"),
+    bigquery.SchemaField("session_traffic_source_last_click", "RECORD", fields=[
+        bigquery.SchemaField("manual_campaign", "RECORD", fields=[
+            bigquery.SchemaField("source",        "STRING"),
+            bigquery.SchemaField("medium",        "STRING"),
+            bigquery.SchemaField("campaign_name", "STRING"),
+            bigquery.SchemaField("content",       "STRING"),
+        ]),
+        bigquery.SchemaField("google_ads_campaign", "RECORD", fields=[
+            bigquery.SchemaField("customer_id",   "STRING"),
+            bigquery.SchemaField("account_name",  "STRING"),
+            bigquery.SchemaField("campaign_id",   "STRING"),
+            bigquery.SchemaField("campaign_name", "STRING"),
+            bigquery.SchemaField("ad_group_id",   "STRING"),
+            bigquery.SchemaField("ad_group_name", "STRING"),
+        ]),
     ]),
 ]
 
