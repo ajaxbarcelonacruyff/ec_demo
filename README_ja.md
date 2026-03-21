@@ -12,7 +12,7 @@ BigQuery 上の GA4 eコマースイベントデータを模したデモデー�
 
 | テーブル | ファイル | 形式 | カラム数 | レコード数（目安）|
 |---|---|---|---|---|
-| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL（日別） | 20列（リーフ展開70列超） | 約3,600行/日 |
+| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL（日別） | 25列（リーフ展開100列超） | 約3,600行/日 |
 | customers | `output/customers.csv` | CSV | 8列 | ユーザー数 × ログイン率 |
 | products | `output/products.csv` | CSV | 9列 | 20行（固定） |
 | orders | `output/orders.csv` | CSV | 14列 | GA4 purchase イベント数と一致 |
@@ -43,15 +43,19 @@ orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
 
 ### GA4 events（JSONL・BigQuery Export 形式）
 
-#### トップレベル列（20列）
+#### トップレベル列（25列）
 
 | カラム | 型 | NULLABLE | 説明 |
 |---|---|---|---|
 | `event_date` | STRING | NO | YYYYMMDD |
 | `event_timestamp` | INTEGER | NO | マイクロ秒 UTC |
 | `event_name` | STRING | NO | イベント名（下記19種） |
+| `event_value_in_usd` | FLOAT | YES | イベント値（USD換算） |
+| `event_bundle_sequence_id` | INTEGER | YES | バンドルシーケンスID |
+| `event_server_timestamp_offset` | INTEGER | YES | サーバータイムスタンプオフセット（マイクロ秒） |
 | `user_pseudo_id` | STRING | NO | GA4 クライアントID |
 | `user_id` | STRING | YES | ログインユーザーID（未ログインは null） |
+| `is_active_user` | BOOLEAN | YES | アクティブユーザーフラグ |
 | `platform` | STRING | NO | "WEB" 固定 |
 | `stream_id` | STRING | NO | GA4 ストリームID |
 | `user_first_touch_timestamp` | INTEGER | YES | マイクロ秒 UTC |
@@ -64,6 +68,7 @@ orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
 | `session_traffic_source_last_click` | RECORD | YES | セッションのラストクリック流入元 |
 | `items` | RECORD REPEATED | YES | 商品情報（ecommerce イベントのみ） |
 | `ecommerce` | RECORD | YES | purchase イベントのみ |
+| `privacy_info` | RECORD | YES | 同意モードのステータス |
 | `batch_page_id` | INTEGER | YES | ページ遷移ごとにインクリメント |
 | `batch_ordering_id` | INTEGER | YES | バッチごとにインクリメント |
 | `batch_event_index` | INTEGER | YES | バッチ内のイベント連番 |
@@ -121,18 +126,24 @@ orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
 | `creative_slot` | string | view_promotion、select_promotion |
 | `method` | string | sign_up、login |
 
-#### items 列（17列）
+#### items 列（25列）
 
 | カラム | 型 | NULLABLE | 備考 |
 |---|---|---|---|
 | `item_id` | STRING | NO | SKU001〜SKU020 |
 | `item_name` | STRING | NO | |
 | `item_brand` | STRING | NO | |
+| `item_variant` | STRING | YES | |
 | `item_category` | STRING | NO | |
 | `item_category2` | STRING | NO | |
 | `item_category3` | STRING | NO | |
+| `item_category4` | STRING | YES | |
+| `item_category5` | STRING | YES | |
 | `price` | FLOAT | NO | |
+| `price_in_usd` | FLOAT | YES | USD換算価格 |
 | `quantity` | INTEGER | NO | |
+| `item_revenue` | FLOAT | YES | purchase イベントの売上 |
+| `item_revenue_in_usd` | FLOAT | YES | USD換算アイテム売上 |
 | `index` | INTEGER | YES | リスト内表示順 |
 | `coupon` | STRING | YES | |
 | `discount` | FLOAT | YES | クーポン割引額 |
@@ -142,19 +153,24 @@ orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
 | `promotion_name` | STRING | YES | |
 | `creative_name` | STRING | YES | |
 | `creative_slot` | STRING | YES | |
+| `location_id` | STRING | YES | |
+| `item_params` | RECORD REPEATED | YES | カスタムアイテムパラメータ |
 
-#### ecommerce 列（6列、purchase イベントのみ）
+#### ecommerce 列（9列、purchase イベントのみ）
 
 | カラム | 型 | 説明 |
 |---|---|---|
 | `transaction_id` | STRING | |
 | `purchase_revenue` | FLOAT | クーポン割引後・送料込み |
-| `total_item_quantity` | INTEGER | |
-| `unique_items` | INTEGER | |
+| `purchase_revenue_in_usd` | FLOAT | USD換算購入売上 |
+| `refund_value` | FLOAT | 返金額（refund イベントのみ） |
+| `refund_value_in_usd` | FLOAT | USD換算返金額 |
 | `shipping_value` | FLOAT | |
 | `tax_value` | FLOAT | |
+| `total_item_quantity` | INTEGER | |
+| `unique_items` | INTEGER | |
 
-#### device 列（11列）
+#### device 列（12列）
 
 | カラム | 型 | NULLABLE |
 |---|---|---|
@@ -166,21 +182,22 @@ orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
 | `mobile_model_name` | STRING | YES | |
 | `mobile_marketing_name` | STRING | YES | |
 | `is_limited_ad_tracking` | STRING | YES | モバイルのみ |
+| `advertising_id` | STRING | YES | |
 | `web_info.browser` | STRING | NO | |
 | `web_info.browser_version` | STRING | NO | |
 | `web_info.hostname` | STRING | NO | |
 
-#### geo 列（5列）
+#### geo 列（6列）
 
-`continent` / `sub_continent` / `country` / `region` / `city`
+`continent` / `sub_continent` / `country` / `region` / `city` / `metro`
 
 #### traffic_source 列（3列、ユーザー初回流入）
 
 `source` / `medium` / `name`
 
-#### collected_traffic_source 列（5列、セッション単位）
+#### collected_traffic_source 列（11列、セッション単位）
 
-`manual_source` / `manual_medium` / `manual_campaign_name` / `manual_content`（nullable）/ `gclid`（nullable）
+`manual_source` / `manual_medium` / `manual_campaign_name` / `manual_content`（nullable）/ `manual_term`（nullable）/ `gclid`（nullable）/ `dclid`（nullable）/ `srsltid`（nullable）/ `manual_source_platform`（nullable）/ `manual_creative_format`（nullable）/ `manual_marketing_tactic`（nullable）
 
 #### session_traffic_source_last_click 列（セッションのラストクリック流入元）
 
@@ -190,13 +207,47 @@ session_traffic_source_last_click
 │   ├── source
 │   ├── medium
 │   ├── campaign_name
-│   └── content（nullable）
-└── google_ads_campaign（Google CPC の場合のみ）
-    ├── customer_id
-    ├── account_name
+│   ├── content（nullable）
+│   ├── term（nullable）
+│   ├── source_platform（nullable）
+│   ├── creative_format（nullable）
+│   └── marketing_tactic（nullable）
+├── google_ads_campaign（Google CPC の場合のみ）
+│   ├── customer_id / account_name
+│   ├── campaign_id / campaign_name
+│   └── ad_group_id / ad_group_name
+├── cross_channel_campaign（nullable）
+│   ├── campaign_name / source / medium
+│   └── source_platform
+├── sa360_campaign（nullable）
+│   ├── campaign_id / campaign_name
+│   ├── ad_group_id / ad_group_name
+│   ├── keyword_text
+│   └── engine_account_name / engine_account_type / manager_account_name
+├── cm360_campaign（nullable）
+│   ├── campaign_id / campaign_name
+│   ├── account_id / account_name
+│   ├── advertiser_id / advertiser_name
+│   ├── placement_id / placement_name
+│   └── site_id / source_type
+└── dv360_campaign（nullable）
     ├── campaign_id / campaign_name
-    └── ad_group_id / ad_group_name
+    ├── advertiser_id / advertiser_name
+    ├── creative_id / creative_name
+    ├── exchange_id / exchange_name
+    ├── insertion_order_id / insertion_order_name
+    ├── line_item_id / line_item_name
+    ├── partner_id / partner_name
+    └── site_id
 ```
+
+#### privacy_info 列（3列）
+
+| カラム | 型 | 説明 |
+|---|---|---|
+| `ads_storage` | STRING | 広告ストレージの同意ステータス（Yes/No） |
+| `analytics_storage` | STRING | アナリティクスストレージの同意ステータス（Yes/No） |
+| `uses_transient_token` | STRING | 一時トークン使用の有無（Yes/No） |
 
 #### batch 列（3列、イベント発生順の判定に使用）
 
@@ -490,4 +541,7 @@ settings:
 | `utils.py` | ID生成・タイムスタンプ変換ユーティリティ |
 | `config.yaml` | 生成パラメータ設定 |
 | `bigquery_load.py` | BigQuery ローダー |
+| `schema_ga4_latest.json` | 最新 GA4 BigQuery Export スキーマ定義 |
+| `migrate_schema.py` | 既存データに新 GA4 スキーマフィールドを追加するマイグレーション |
+| `fix_event_order.py` | セッション内イベント順序の修正スクリプト |
 | `sql/mart/v_events_flat.sql` | イベントフラット化ビュー定義 |

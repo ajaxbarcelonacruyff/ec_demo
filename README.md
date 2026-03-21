@@ -12,7 +12,7 @@ Generates realistic GA4 BigQuery Export-format ecommerce event data along with r
 
 | Table | File | Format | Columns | Rows (approx.) |
 |---|---|---|---|---|
-| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL (daily) | 20 (70+ leaf) | ~3,600/day |
+| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL (daily) | 25 (100+ leaf) | ~3,600/day |
 | customers | `output/customers.csv` | CSV | 8 | users x login rate |
 | products | `output/products.csv` | CSV | 9 | 20 (fixed) |
 | orders | `output/orders.csv` | CSV | 14 | = GA4 purchase events |
@@ -43,15 +43,19 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 
 ### GA4 events (JSONL, BigQuery Export format)
 
-#### Top-level columns (20)
+#### Top-level columns (25)
 
 | Column | Type | NULLABLE | Description |
 |---|---|---|---|
 | `event_date` | STRING | NO | YYYYMMDD |
 | `event_timestamp` | INTEGER | NO | Microseconds UTC |
 | `event_name` | STRING | NO | Event name (19 types below) |
+| `event_value_in_usd` | FLOAT | YES | Event value converted to USD |
+| `event_bundle_sequence_id` | INTEGER | YES | Bundle sequence ID |
+| `event_server_timestamp_offset` | INTEGER | YES | Server timestamp offset (microseconds) |
 | `user_pseudo_id` | STRING | NO | GA4 client ID |
 | `user_id` | STRING | YES | Logged-in user ID (null if anonymous) |
+| `is_active_user` | BOOLEAN | YES | Whether the user was active |
 | `platform` | STRING | NO | "WEB" (fixed) |
 | `stream_id` | STRING | NO | GA4 stream ID |
 | `user_first_touch_timestamp` | INTEGER | YES | Microseconds UTC |
@@ -64,6 +68,7 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `session_traffic_source_last_click` | RECORD | YES | Session last-click traffic source |
 | `items` | RECORD REPEATED | YES | Product info (ecommerce events only) |
 | `ecommerce` | RECORD | YES | Purchase events only |
+| `privacy_info` | RECORD | YES | Consent mode status |
 | `batch_page_id` | INTEGER | YES | Increments per page transition |
 | `batch_ordering_id` | INTEGER | YES | Increments per batch |
 | `batch_event_index` | INTEGER | YES | Event sequence within a batch |
@@ -121,18 +126,24 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `creative_slot` | string | view_promotion, select_promotion |
 | `method` | string | sign_up, login |
 
-#### items columns (17)
+#### items columns (25)
 
 | Column | Type | NULLABLE | Notes |
 |---|---|---|---|
 | `item_id` | STRING | NO | SKU001-SKU020 |
 | `item_name` | STRING | NO | |
 | `item_brand` | STRING | NO | |
+| `item_variant` | STRING | YES | |
 | `item_category` | STRING | NO | |
 | `item_category2` | STRING | NO | |
 | `item_category3` | STRING | NO | |
+| `item_category4` | STRING | YES | |
+| `item_category5` | STRING | YES | |
 | `price` | FLOAT | NO | |
+| `price_in_usd` | FLOAT | YES | USD-converted price |
 | `quantity` | INTEGER | NO | |
+| `item_revenue` | FLOAT | YES | Revenue for purchase events |
+| `item_revenue_in_usd` | FLOAT | YES | USD-converted item revenue |
 | `index` | INTEGER | YES | Position in list |
 | `coupon` | STRING | YES | |
 | `discount` | FLOAT | YES | Coupon discount amount |
@@ -142,19 +153,24 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `promotion_name` | STRING | YES | |
 | `creative_name` | STRING | YES | |
 | `creative_slot` | STRING | YES | |
+| `location_id` | STRING | YES | |
+| `item_params` | RECORD REPEATED | YES | Custom item parameters |
 
-#### ecommerce columns (6, purchase events only)
+#### ecommerce columns (9, purchase events only)
 
 | Column | Type | Description |
 |---|---|---|
 | `transaction_id` | STRING | |
 | `purchase_revenue` | FLOAT | After coupon discount, including shipping |
-| `total_item_quantity` | INTEGER | |
-| `unique_items` | INTEGER | |
+| `purchase_revenue_in_usd` | FLOAT | USD-converted purchase revenue |
+| `refund_value` | FLOAT | Refund amount (refund events only) |
+| `refund_value_in_usd` | FLOAT | USD-converted refund value |
 | `shipping_value` | FLOAT | |
 | `tax_value` | FLOAT | |
+| `total_item_quantity` | INTEGER | |
+| `unique_items` | INTEGER | |
 
-#### device columns (11)
+#### device columns (12)
 
 | Column | Type | NULLABLE |
 |---|---|---|
@@ -166,21 +182,22 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `mobile_model_name` | STRING | YES | |
 | `mobile_marketing_name` | STRING | YES | |
 | `is_limited_ad_tracking` | STRING | YES | Mobile only |
+| `advertising_id` | STRING | YES | |
 | `web_info.browser` | STRING | NO | |
 | `web_info.browser_version` | STRING | NO | |
 | `web_info.hostname` | STRING | NO | |
 
-#### geo columns (5)
+#### geo columns (6)
 
-`continent` / `sub_continent` / `country` / `region` / `city`
+`continent` / `sub_continent` / `country` / `region` / `city` / `metro`
 
 #### traffic_source columns (3, user first-touch)
 
 `source` / `medium` / `name`
 
-#### collected_traffic_source columns (5, session-level)
+#### collected_traffic_source columns (11, session-level)
 
-`manual_source` / `manual_medium` / `manual_campaign_name` / `manual_content` (nullable) / `gclid` (nullable)
+`manual_source` / `manual_medium` / `manual_campaign_name` / `manual_content` (nullable) / `manual_term` (nullable) / `gclid` (nullable) / `dclid` (nullable) / `srsltid` (nullable) / `manual_source_platform` (nullable) / `manual_creative_format` (nullable) / `manual_marketing_tactic` (nullable)
 
 #### session_traffic_source_last_click columns (session last-click source)
 
@@ -190,13 +207,47 @@ session_traffic_source_last_click
 │   ├── source
 │   ├── medium
 │   ├── campaign_name
-│   └── content (nullable)
-└── google_ads_campaign (Google CPC only)
-    ├── customer_id
-    ├── account_name
+│   ├── content (nullable)
+│   ├── term (nullable)
+│   ├── source_platform (nullable)
+│   ├── creative_format (nullable)
+│   └── marketing_tactic (nullable)
+├── google_ads_campaign (Google CPC only)
+│   ├── customer_id / account_name
+│   ├── campaign_id / campaign_name
+│   └── ad_group_id / ad_group_name
+├── cross_channel_campaign (nullable)
+│   ├── campaign_name / source / medium
+│   └── source_platform
+├── sa360_campaign (nullable)
+│   ├── campaign_id / campaign_name
+│   ├── ad_group_id / ad_group_name
+│   ├── keyword_text
+│   └── engine_account_name / engine_account_type / manager_account_name
+├── cm360_campaign (nullable)
+│   ├── campaign_id / campaign_name
+│   ├── account_id / account_name
+│   ├── advertiser_id / advertiser_name
+│   ├── placement_id / placement_name
+│   └── site_id / source_type
+└── dv360_campaign (nullable)
     ├── campaign_id / campaign_name
-    └── ad_group_id / ad_group_name
+    ├── advertiser_id / advertiser_name
+    ├── creative_id / creative_name
+    ├── exchange_id / exchange_name
+    ├── insertion_order_id / insertion_order_name
+    ├── line_item_id / line_item_name
+    ├── partner_id / partner_name
+    └── site_id
 ```
+
+#### privacy_info columns (3)
+
+| Column | Type | Description |
+|---|---|---|
+| `ads_storage` | STRING | Consent status for ad storage (Yes/No) |
+| `analytics_storage` | STRING | Consent status for analytics storage (Yes/No) |
+| `uses_transient_token` | STRING | Whether transient token is used (Yes/No) |
 
 #### batch columns (3, for determining event order)
 
@@ -490,4 +541,7 @@ settings:
 | `utils.py` | ID generation and timestamp utilities |
 | `config.yaml` | Generation parameter settings |
 | `bigquery_load.py` | BigQuery loader |
+| `schema_ga4_latest.json` | Latest GA4 BigQuery Export schema definition |
+| `migrate_schema.py` | Migration script to add new GA4 schema fields to existing data |
+| `fix_event_order.py` | Script to fix event ordering within sessions |
 | `sql/mart/v_events_flat.sql` | Event flattening view definition |
