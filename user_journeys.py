@@ -1,4 +1,14 @@
-"""User journey and session simulation for GA4 ecommerce demo data."""
+"""User journey and session simulation for GA4 ecommerce demo data.
+
+Improvements over v1:
+- User segments (new vs returning) with different funnel rates
+- Category affinity per user
+- Device-based behavior differences
+- Campaign-aware traffic source boosting
+- Landing page ↔ traffic source correlation
+- Data quality noise (null user_id, bot sessions, payment failures)
+- Fixed event ordering (login after first page_view)
+"""
 
 import random
 from datetime import datetime, timedelta
@@ -6,11 +16,11 @@ from datetime import datetime, timedelta
 from utils import (
     generate_user_pseudo_id, generate_ga_session_id, generate_transaction_id,
     generate_user_id, nz_datetime_to_event_timestamp, event_date_from_nz,
-    random_time_of_day, NZ_TZ,
+    random_time_of_day, NZ_TZ, is_campaign_active,
 )
 from product_catalog import (
     pick_products, pick_product_list, pick_promotion,
-    apply_coupon, COUPONS,
+    apply_coupon, COUPONS, CATEGORIES,
 )
 from tables import generate_customer_attrs
 from traffic_sources import (
@@ -30,6 +40,9 @@ SITE_PAGES = [
     {"path": "/category/accessories",   "title": "アクセサリー | Example EC",    "list_id": "category_accessories",  "list_name": "アクセサリー"},
     {"path": "/category/office",        "title": "オフィス用品 | Example EC",    "list_id": "category_office",       "list_name": "オフィス用品"},
     {"path": "/category/smart-home",    "title": "スマートホーム | Example EC",  "list_id": "category_smart_home",   "list_name": "スマートホーム"},
+    {"path": "/category/bags",          "title": "バッグ | Example EC",          "list_id": "category_bags",         "list_name": "バッグ"},
+    {"path": "/category/health",        "title": "ヘルス＆フィットネス | Example EC", "list_id": "category_health",  "list_name": "ヘルス＆フィットネス"},
+    {"path": "/category/home",          "title": "ホーム＆リビング | Example EC", "list_id": "category_home",        "list_name": "ホーム＆リビング"},
     {"path": "/sale",                   "title": "セール | Example EC",          "list_id": "sale_items",            "list_name": "セール商品"},
     {"path": "/new-arrivals",           "title": "新着商品 | Example EC",        "list_id": "new_arrivals",          "list_name": "新着商品"},
     {"path": "/about",                  "title": "会社概要 | Example EC"},
@@ -43,6 +56,8 @@ SEARCH_TERMS = [
     "モニター", "スピーカー", "イヤホン", "ウェブカメラ", "SSD", "バックパック",
     "LEDライト", "USBハブ", "ゲーミング", "ノイズキャンセリング", "Bluetooth",
     "充電ケーブル", "タブレットスタンド", "マイク", "スマートプラグ", "マウスパッド",
+    "ヨガマット", "デスクライト", "加湿器", "扇風機", "スマートスピーカー",
+    "ロボット掃除機", "ドッキングステーション", "リュック", "ポーチ",
 ]
 
 SHIPPING_OPTIONS = [
@@ -59,6 +74,15 @@ LOGIN_WEIGHTS   = [50, 30, 15, 5]
 
 TAX_RATE = 0.10
 
+# Landing pages by traffic source type
+_SOURCE_LANDING_PAGES = {
+    "cpc":      ["/sale", "/new-arrivals", "/category/electronics"],
+    "email":    ["/sale", "/new-arrivals", "/"],
+    "organic":  ["/", "/category/electronics", "/category/audio", "/category/office"],
+    "social":   ["/", "/sale", "/new-arrivals"],
+    "(none)":   ["/", "/category/electronics"],
+}
+
 # Referrer URLs by traffic source
 _REFERRERS = {
     "google":    "https://www.google.com/",
@@ -71,9 +95,77 @@ _REFERRERS = {
     "(direct)":  "",
 }
 
+# Funnel adjustment by segment
+_SEGMENT_FUNNEL_MULTIPLIERS = {
+    # New users: lower conversion, more browsing
+    "new": {
+        "browse_to_view_item": 0.85,
+        "view_item_to_add_to_cart": 0.65,
+        "add_to_cart_to_checkout": 0.70,
+        "checkout_to_purchase": 0.80,
+    },
+    # Returning users (2-5 sessions): moderate
+    "returning": {
+        "browse_to_view_item": 1.0,
+        "view_item_to_add_to_cart": 1.0,
+        "add_to_cart_to_checkout": 1.0,
+        "checkout_to_purchase": 1.0,
+    },
+    # Loyal users (6+ sessions): higher conversion
+    "loyal": {
+        "browse_to_view_item": 1.1,
+        "view_item_to_add_to_cart": 1.4,
+        "add_to_cart_to_checkout": 1.3,
+        "checkout_to_purchase": 1.15,
+    },
+}
+
+# Device funnel adjustments (mobile users slightly lower conversion)
+_DEVICE_FUNNEL_MULTIPLIERS = {
+    "mobile":  {"view_item_to_add_to_cart": 0.85, "checkout_to_purchase": 0.90},
+    "desktop": {"view_item_to_add_to_cart": 1.10, "checkout_to_purchase": 1.05},
+    "tablet":  {"view_item_to_add_to_cart": 0.95, "checkout_to_purchase": 0.95},
+}
+
 
 def _referrer_for_source(src: dict) -> str:
     return _REFERRERS.get(src.get("source", ""), "")
+
+
+def _get_user_segment(session_count: int) -> str:
+    """Classify user based on historical session count."""
+    if session_count <= 1:
+        return "new"
+    elif session_count <= 5:
+        return "returning"
+    else:
+        return "loyal"
+
+
+def _get_adjusted_funnel(base_funnel: dict, segment: str, device_category: str) -> dict:
+    """Apply segment and device multipliers to base funnel rates."""
+    result = dict(base_funnel)
+    seg_mult = _SEGMENT_FUNNEL_MULTIPLIERS.get(segment, {})
+    dev_mult = _DEVICE_FUNNEL_MULTIPLIERS.get(device_category, {})
+    for key in result:
+        val = result[key]
+        if key in seg_mult:
+            val *= seg_mult[key]
+        if key in dev_mult:
+            val *= dev_mult[key]
+        result[key] = min(val, 0.99)  # cap at 99%
+    return result
+
+
+def _pick_landing_for_source(src: dict) -> dict:
+    """Pick a landing page correlated with the traffic source medium."""
+    medium = src.get("medium", "(none)")
+    paths = _SOURCE_LANDING_PAGES.get(medium, _SOURCE_LANDING_PAGES["(none)"])
+    target_path = random.choice(paths)
+    for page in SITE_PAGES:
+        if page["path"] == target_path:
+            return page
+    return SITE_PAGES[0]  # fallback to home
 
 
 def create_user_pool(
@@ -81,12 +173,7 @@ def create_user_pool(
     logged_in_ratio: float,
     sim_start: "date | None" = None,
 ) -> list[dict]:
-    """Create a pool of simulated users.
-
-    Logged-in users get customer attributes (name, email, …) via
-    generate_customer_attrs so that customers.csv can be derived directly
-    from the user pool with the same customer_id == user_id key.
-    """
+    """Create a pool of simulated users with category affinity."""
     from datetime import date as _date
     if sim_start is None:
         sim_start = _date.today()
@@ -94,6 +181,11 @@ def create_user_pool(
     users = []
     for _ in range(total_users):
         user_id = generate_user_id() if random.random() < logged_in_ratio else None
+
+        # Category affinity: each user has 1-3 preferred categories
+        n_affinity = random.choices([1, 2, 3], weights=[40, 40, 20], k=1)[0]
+        affinity = random.sample(CATEGORIES, min(n_affinity, len(CATEGORIES)))
+
         user = {
             "user_pseudo_id":      generate_user_pseudo_id(),
             "user_id":             user_id,
@@ -102,9 +194,9 @@ def create_user_pool(
             "first_touch_source":  pick_traffic_source(),
             "session_count":       0,
             "purchase_propensity": random.betavariate(2, 5),
+            "affinity_categories": affinity,
         }
         if user_id:
-            # Merge customer master attributes; customer_id == user_id
             user.update(generate_customer_attrs(user_id, sim_start))
         users.append(user)
     return users
@@ -121,6 +213,59 @@ def _strip_list_fields(items: list[dict]) -> list[dict]:
     """Remove list-level fields from items for cart/checkout/purchase events."""
     remove = {"item_list_id", "item_list_name", "index"}
     return [{k: v for k, v in item.items() if k not in remove} for item in items]
+
+
+def generate_bot_session(user: dict, session_date: datetime, config: dict) -> list[dict]:
+    """Generate a bot-like session: rapid page views, no engagement."""
+    session_id = generate_ga_session_id()
+    stream_id = config.get("stream_id", "1234567890")
+    device_record = build_device_record(user["device_profile"])
+    geo_record = build_geo_record(user["geo_profile"])
+    traffic_src_record = build_traffic_source_record(user["first_touch_source"])
+
+    current_time = session_date + random_time_of_day()
+    events = []
+
+    # session_start
+    ts = nz_datetime_to_event_timestamp(current_time)
+    date_str = event_date_from_nz(current_time)
+    params = [
+        ep("ga_session_id", int_value=session_id),
+        ep("ga_session_number", int_value=1),
+        ep("session_engaged", int_value=0),
+        ep("entrances", int_value=1),
+        ep("engagement_time_msec", int_value=random.randint(0, 100)),
+    ]
+    events.append(build_event(
+        event_name="session_start", event_timestamp=ts, event_date=date_str,
+        user_pseudo_id=user["user_pseudo_id"], event_params=params,
+        user_properties=[], device=device_record, geo=geo_record,
+        traffic_source=traffic_src_record, stream_id=stream_id,
+        batch_page_id=0, batch_ordering_id=0, batch_event_index=0,
+    ))
+
+    # Rapid page views (5-20 pages in very short time)
+    for i in range(random.randint(5, 20)):
+        current_time += timedelta(milliseconds=random.randint(200, 2000))
+        page = random.choice(SITE_PAGES)
+        ts = nz_datetime_to_event_timestamp(current_time)
+        params = [
+            ep("ga_session_id", int_value=session_id),
+            ep("ga_session_number", int_value=1),
+            ep("session_engaged", int_value=0),
+            ep("page_location", string_value=_page_url(page["path"])),
+            ep("page_title", string_value=page["title"]),
+            ep("engagement_time_msec", int_value=random.randint(0, 50)),
+        ]
+        events.append(build_event(
+            event_name="page_view", event_timestamp=ts, event_date=date_str,
+            user_pseudo_id=user["user_pseudo_id"], event_params=params,
+            user_properties=[], device=device_record, geo=geo_record,
+            traffic_source=traffic_src_record, stream_id=stream_id,
+            batch_page_id=i + 1, batch_ordering_id=i + 1, batch_event_index=0,
+        ))
+
+    return events
 
 
 def generate_refund_event(refund_info: dict, refund_date: datetime, stream_id: str) -> dict:
@@ -176,12 +321,18 @@ def generate_session_events(
         purchase_info is a dict with data needed to generate a future refund,
         or None if no purchase occurred.
     """
+    noise_cfg = config.get("noise", {})
+
     is_first_session = (user["session_count"] == 0)
     user["session_count"] += 1
 
     session_id     = generate_ga_session_id()
     session_number = user["session_count"]
-    session_src    = pick_traffic_source()
+
+    # Campaign-aware traffic source
+    session_src = pick_traffic_source(
+        active_campaigns=config.get("active_campaigns", []),
+    )
 
     device_record       = build_device_record(user["device_profile"])
     geo_record          = build_geo_record(user["geo_profile"])
@@ -189,18 +340,29 @@ def generate_session_events(
     collected_ts        = build_collected_traffic_source(session_src)
     stslc               = build_session_traffic_source_last_click(session_src)
 
-    # Batch tracking: batch_page_id increments per page, batch_event_index
-    # increments per event within a batch, batch_ordering_id per batch.
+    # Segment-based funnel adjustment
+    segment = _get_user_segment(session_number)
+    device_category = user["device_profile"]["category"]
+    base_funnel = config.get("funnel", {})
+    funnel = _get_adjusted_funnel(base_funnel, segment, device_category)
+
+    month = session_date.month
+    affinity = user.get("affinity_categories", [])
+
+    # Determine effective user_id (apply noise: sometimes null for logged-in users)
+    effective_user_id = user["user_id"]
+    if effective_user_id and random.random() < noise_cfg.get("null_user_id_rate", 0.0):
+        effective_user_id = None  # simulate tracking gap
+
+    # Batch tracking
     batch_state = {"page_id": 0, "ordering_id": 0, "event_index": 0}
 
     def _new_batch():
-        """Start a new batch (triggered by page transitions)."""
         batch_state["page_id"] += 1
         batch_state["ordering_id"] += 1
         batch_state["event_index"] = 0
 
     def _next_event_index():
-        """Get the next event index within the current batch."""
         idx = batch_state["event_index"]
         batch_state["event_index"] += 1
         return idx
@@ -212,7 +374,6 @@ def generate_session_events(
 
     stream_id = config.get("stream_id", "1234567890")
     currency  = config.get("currency", "JPY")
-    funnel    = config.get("funnel", {})
 
     current_time = session_date + random_time_of_day()
     events: list[dict] = []
@@ -230,7 +391,7 @@ def generate_session_events(
         ]
 
     def _user_props():
-        return [up("user_id", string_value=user["user_id"])] if user["user_id"] else []
+        return [up("user_id", string_value=effective_user_id)] if effective_user_id else []
 
     def _ev(name, extra=None, items=None, ecommerce=None, is_page_view=False):
         if is_page_view:
@@ -247,7 +408,7 @@ def generate_session_events(
             traffic_source=traffic_src_record,
             collected_traffic_source=collected_ts,
             stream_id=stream_id,
-            user_id=user["user_id"],
+            user_id=effective_user_id,
             user_first_touch_timestamp=first_touch_ts,
             items=items,
             ecommerce=ecommerce,
@@ -272,18 +433,8 @@ def generate_session_events(
     events.append(_ev("session_start", [ep("entrances", int_value=1)]))
     _advance(1, 3)
 
-    # 3. sign_up / login
-    if user["user_id"]:
-        method = random.choices(LOGIN_METHODS, LOGIN_WEIGHTS, k=1)[0]
-        if is_first_session and random.random() < 0.70:
-            events.append(_ev("sign_up", [ep("method", string_value=method)]))
-            _advance(10, 60)
-        elif not is_first_session and random.random() < 0.55:
-            events.append(_ev("login", [ep("method", string_value=method)]))
-            _advance(5, 20)
-
-    # 4. Landing page_view
-    landing      = random.choice(SITE_PAGES)
+    # 3. Landing page_view (BEFORE login/signup to match real behavior)
+    landing = _pick_landing_for_source(session_src)
     landing_url  = _page_url(landing["path"])
     ext_referrer = _referrer_for_source(session_src)
 
@@ -293,19 +444,26 @@ def generate_session_events(
         ep("page_referrer", string_value=ext_referrer),
         ep("entrances",     int_value=1),
     ], is_page_view=True))
-    _advance(10, 60)
+    _advance(5, 30)
+
+    # 4. sign_up / login (AFTER landing page_view)
+    if user["user_id"]:
+        method = random.choices(LOGIN_METHODS, LOGIN_WEIGHTS, k=1)[0]
+        if is_first_session and random.random() < 0.70:
+            events.append(_ev("sign_up", [ep("method", string_value=method)]))
+            _advance(10, 60)
+        elif not is_first_session and random.random() < 0.55:
+            events.append(_ev("login", [ep("method", string_value=method)]))
+            _advance(5, 20)
 
     prev_url     = landing_url
-    browsed_list = []   # items from the last view_item_list
-    active_page  = None # the category page that produced browsed_list
+    browsed_list = []
+    active_page  = None
 
     # 5. Site search (20 % of sessions)
     if random.random() < 0.20:
         term = random.choice(SEARCH_TERMS)
         search_url = _page_url("/search", f"q={term.replace(' ', '+')}")
-
-        events.append(_ev("search", [ep("search_term", string_value=term)]))
-        _advance(1, 3)
 
         events.append(_ev("page_view", [
             ep("page_location", string_value=search_url),
@@ -313,10 +471,14 @@ def generate_session_events(
             ep("page_referrer", string_value=prev_url),
             ep("search_term",   string_value=term),
         ], is_page_view=True))
-        _advance(5, 20)
+        _advance(1, 3)
+
+        events.append(_ev("search", [ep("search_term", string_value=term)]))
+        _advance(3, 10)
 
         list_items = pick_product_list(random.randint(8, 16),
-                                       list_id="search_results", list_name="検索結果")
+                                       list_id="search_results", list_name="検索結果",
+                                       month=month, affinity_categories=affinity)
         events.append(_ev("view_item_list", [
             ep("item_list_id",   string_value="search_results"),
             ep("item_list_name", string_value="検索結果"),
@@ -342,7 +504,8 @@ def generate_session_events(
 
         if "list_id" in page:
             list_items = pick_product_list(random.randint(8, 16),
-                                           list_id=page["list_id"], list_name=page["list_name"])
+                                           list_id=page["list_id"], list_name=page["list_name"],
+                                           month=month, affinity_categories=affinity)
             events.append(_ev("view_item_list", [
                 ep("item_list_id",   string_value=page["list_id"]),
                 ep("item_list_name", string_value=page["list_name"]),
@@ -355,10 +518,11 @@ def generate_session_events(
     # 7. view_promotion → select_promotion (optional)
     promo = None
     if random.random() < funnel.get("promotion_probability", 0.15):
-        promo       = pick_promotion()
+        promo       = pick_promotion(month=month)
         promo_items = pick_product_list(3,
                                         list_id=promo["promotion_id"],
-                                        list_name=promo["promotion_name"])
+                                        list_name=promo["promotion_name"],
+                                        month=month)
         for it in promo_items:
             it.update({
                 "promotion_id":   promo["promotion_id"],
@@ -376,7 +540,6 @@ def generate_session_events(
         events.append(_ev("view_promotion", promo_params, items=promo_items))
         _advance(5, 30)
 
-        # 60 % of viewers click the promotion
         if random.random() < 0.60:
             events.append(_ev("select_promotion", promo_params, items=promo_items))
             _advance(5, 20)
@@ -384,7 +547,6 @@ def generate_session_events(
     # 8. select_item → view_item (and deeper funnel)
     if random.random() < funnel.get("browse_to_view_item", 0.70):
 
-        # select_item: click a product from the last viewed list
         if browsed_list and active_page:
             clicked = random.choice(browsed_list[:min(8, len(browsed_list))])
             events.append(_ev("select_item", [
@@ -392,12 +554,13 @@ def generate_session_events(
                 ep("item_list_name", string_value=active_page["list_name"]),
             ], items=[clicked]))
             _advance(1, 5)
-            # The detail items start with the clicked product
             detail_items = [clicked] + (
-                pick_products(random.randint(0, 2)) if random.random() < 0.3 else []
+                pick_products(random.randint(0, 2), month=month, affinity_categories=affinity)
+                if random.random() < 0.3 else []
             )
         else:
-            detail_items = pick_products(random.randint(1, 3))
+            detail_items = pick_products(random.randint(1, 3), month=month,
+                                         affinity_categories=affinity)
 
         # view_item for each product (each has its own product page)
         for it in detail_items:
@@ -478,7 +641,38 @@ def generate_session_events(
                 events.append(_ev("begin_checkout", checkout_params, items=added))
                 _advance(30, 120)
 
-                # 13. add_shipping_info
+                # 13. Payment failure → retry (noise)
+                payment_failed = random.random() < noise_cfg.get("payment_failure_rate", 0.0)
+                if payment_failed:
+                    # Emit a page_view to error page, then return to checkout
+                    error_url = _page_url("/checkout/error")
+                    events.append(_ev("page_view", [
+                        ep("page_location", string_value=error_url),
+                        ep("page_title",    string_value="決済エラー | Example EC"),
+                        ep("page_referrer", string_value=checkout_url),
+                    ], is_page_view=True))
+                    _advance(10, 60)
+
+                    # Some users abandon after error (40%)
+                    if random.random() < 0.40:
+                        # Add engagement_time_msec to all events and return
+                        for ev in events:
+                            ev["event_params"].append(
+                                ep("engagement_time_msec", int_value=random.randint(500, 30000))
+                            )
+                        return events, None
+
+                    # Retry: back to checkout
+                    events.append(_ev("page_view", [
+                        ep("page_location", string_value=checkout_url),
+                        ep("page_title",    string_value="チェックアウト | Example EC"),
+                        ep("page_referrer", string_value=error_url),
+                    ], is_page_view=True))
+                    _advance(10, 30)
+                    events.append(_ev("begin_checkout", checkout_params, items=added))
+                    _advance(30, 90)
+
+                # 14. add_shipping_info
                 if random.random() < funnel.get("checkout_to_purchase", 0.75):
                     ship_opt    = random.choice(SHIPPING_OPTIONS)
                     ship_fee    = 0.0 if cart_subtotal >= FREE_SHIPPING_THRESHOLD else float(ship_opt["fee"])
@@ -493,7 +687,7 @@ def generate_session_events(
                     events.append(_ev("add_shipping_info", ship_params, items=added))
                     _advance(30, 120)
 
-                    # 14. add_payment_info
+                    # 15. add_payment_info
                     payment_type   = random.choices(PAYMENT_TYPES, PAYMENT_WEIGHTS, k=1)[0]
                     payment_params = [
                         ep("currency",     string_value=currency),
@@ -505,7 +699,7 @@ def generate_session_events(
                     events.append(_ev("add_payment_info", payment_params, items=added))
                     _advance(30, 120)
 
-                    # 15. purchase
+                    # 16. purchase
                     txn_id         = generate_transaction_id()
                     discount_total = apply_coupon(cart_subtotal, order_coupon) if order_coupon else 0.0
                     revenue        = cart_subtotal - discount_total + ship_fee
@@ -537,11 +731,9 @@ def generate_session_events(
                     _advance(5, 30)
 
                     purchase_info = {
-                        # --- GA4 linkage keys (must match events exactly) ---
                         "user_pseudo_id":  user["user_pseudo_id"],
-                        "user_id":         user["user_id"],        # == customers.customer_id
-                        "transaction_id":  txn_id,                 # == orders.order_id
-                        # --- order master fields ---
+                        "user_id":         user["user_id"],  # always use real user_id for orders
+                        "transaction_id":  txn_id,
                         "order_datetime":  purchase_datetime,
                         "subtotal":        cart_subtotal,
                         "coupon_code":     order_coupon,
@@ -552,9 +744,7 @@ def generate_session_events(
                         "total_amount":    revenue,
                         "payment_type":    payment_type,
                         "currency":        currency,
-                        # --- order_items fields (item_id == products.product_id) ---
                         "items":           added,
-                        # --- refund event generation ---
                         "session_id":      session_id,
                         "session_number":  session_number,
                         "device":          device_record,
@@ -579,29 +769,47 @@ def generate_day_events(
 ) -> tuple[list[dict], list[dict]]:
     """Generate all events for one day.
 
-    Args:
-        users:        Full user pool.
-        target_date:  The day to simulate (tz-aware).
-        config:       Generation config dict.
-        due_refunds:  Refund infos whose refund_date <= target_date.
-
-    Returns:
-        (events, new_purchase_infos)
-        new_purchase_infos: purchase records from today for future refund scheduling.
+    Applies day-of-week traffic variation and campaign awareness.
     """
     daily_active_ratio = config.get("daily_active_ratio", 0.15)
     sessions_range     = config.get("sessions_per_day_range", [1, 3])
     stream_id          = config.get("stream_id", "1234567890")
+    noise_cfg          = config.get("noise", {})
 
-    active_count = max(1, int(len(users) * daily_active_ratio))
-    active_users = random.sample(users, active_count)
+    # Day-of-week traffic multiplier
+    dow = target_date.weekday()  # Mon=0 .. Sun=6
+    dow_weights = config.get("day_of_week_weights", {})
+    dow_mult = dow_weights.get(dow, dow_weights.get(str(dow), 1.0))
+
+    # Campaign awareness
+    campaigns = config.get("campaigns", [])
+    active_campaigns = is_campaign_active(target_date, campaigns)
+
+    # Campaign boosts DAU slightly
+    campaign_dau_boost = 1.0
+    if active_campaigns:
+        campaign_dau_boost = 1.15
+
+    adjusted_ratio = daily_active_ratio * dow_mult * campaign_dau_boost
+    active_count = max(1, int(len(users) * adjusted_ratio))
+    active_users = random.sample(users, min(active_count, len(users)))
+
+    # Pass campaign info into session config
+    session_config = dict(config)
+    session_config["active_campaigns"] = active_campaigns
 
     all_events:    list[dict] = []
     new_purchases: list[dict] = []
 
     for user in active_users:
         for _ in range(random.randint(*sessions_range)):
-            session_events, p_info = generate_session_events(user, target_date, config)
+            # Bot session check
+            if random.random() < noise_cfg.get("bot_session_rate", 0.0):
+                bot_events = generate_bot_session(user, target_date, session_config)
+                all_events.extend(bot_events)
+                continue
+
+            session_events, p_info = generate_session_events(user, target_date, session_config)
             all_events.extend(session_events)
             if p_info:
                 new_purchases.append(p_info)

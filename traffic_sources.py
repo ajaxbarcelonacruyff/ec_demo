@@ -1,31 +1,50 @@
-"""Traffic source generation for GA4 demo data."""
+"""Traffic source generation for GA4 demo data.
+
+Supports campaign-aware traffic source selection:
+during active campaigns, CPC and email sources get boosted weights.
+"""
 
 import random
 from utils import weighted_choice
 
 SOURCES = [
-    {"source": "google", "medium": "organic", "campaign": "(organic)", "content": None, "weight": 35},
-    {"source": "(direct)", "medium": "(none)", "campaign": "(direct)", "content": None, "weight": 25},
-    {"source": "google", "medium": "cpc", "campaign": "spring_sale_2025", "content": "banner_top", "weight": 4},
-    {"source": "google", "medium": "cpc", "campaign": "spring_sale_2025", "content": "sidebar_rect", "weight": 4},
-    {"source": "google", "medium": "cpc", "campaign": "brand_awareness", "content": "text_ad_v1", "weight": 4},
-    {"source": "google", "medium": "cpc", "campaign": "brand_awareness", "content": "text_ad_v2", "weight": 3},
-    {"source": "yahoo", "medium": "organic", "campaign": "(organic)", "content": None, "weight": 5},
-    {"source": "facebook", "medium": "referral", "campaign": "(referral)", "content": None, "weight": 3},
-    {"source": "facebook", "medium": "social", "campaign": "fb_winter_sale", "content": "carousel_products", "weight": 2},
-    {"source": "instagram", "medium": "social", "campaign": "ig_promo", "content": "story_ad", "weight": 2},
-    {"source": "instagram", "medium": "social", "campaign": "ig_promo", "content": "feed_post", "weight": 1},
-    {"source": "twitter", "medium": "social", "campaign": "(social)", "content": None, "weight": 2},
-    {"source": "newsletter", "medium": "email", "campaign": "weekly_digest", "content": "header_cta", "weight": 3},
-    {"source": "newsletter", "medium": "email", "campaign": "weekly_digest", "content": "product_grid", "weight": 2},
-    {"source": "newsletter", "medium": "email", "campaign": "new_arrival", "content": "hero_banner", "weight": 3},
-    {"source": "line", "medium": "social", "campaign": "line_message", "content": "rich_menu", "weight": 2},
+    {"source": "google",     "medium": "organic",  "campaign": "(organic)",        "content": None,               "weight": 35},
+    {"source": "(direct)",   "medium": "(none)",    "campaign": "(direct)",         "content": None,               "weight": 25},
+    {"source": "google",     "medium": "cpc",       "campaign": "spring_sale_2025", "content": "banner_top",       "weight": 4},
+    {"source": "google",     "medium": "cpc",       "campaign": "spring_sale_2025", "content": "sidebar_rect",     "weight": 4},
+    {"source": "google",     "medium": "cpc",       "campaign": "brand_awareness",  "content": "text_ad_v1",       "weight": 4},
+    {"source": "google",     "medium": "cpc",       "campaign": "brand_awareness",  "content": "text_ad_v2",       "weight": 3},
+    {"source": "yahoo",      "medium": "organic",   "campaign": "(organic)",        "content": None,               "weight": 5},
+    {"source": "facebook",   "medium": "referral",  "campaign": "(referral)",       "content": None,               "weight": 3},
+    {"source": "facebook",   "medium": "social",    "campaign": "fb_winter_sale",   "content": "carousel_products","weight": 2},
+    {"source": "instagram",  "medium": "social",    "campaign": "ig_promo",         "content": "story_ad",         "weight": 2},
+    {"source": "instagram",  "medium": "social",    "campaign": "ig_promo",         "content": "feed_post",        "weight": 1},
+    {"source": "twitter",    "medium": "social",    "campaign": "(social)",         "content": None,               "weight": 2},
+    {"source": "newsletter", "medium": "email",     "campaign": "weekly_digest",    "content": "header_cta",       "weight": 3},
+    {"source": "newsletter", "medium": "email",     "campaign": "weekly_digest",    "content": "product_grid",     "weight": 2},
+    {"source": "newsletter", "medium": "email",     "campaign": "new_arrival",      "content": "hero_banner",      "weight": 3},
+    {"source": "line",       "medium": "social",    "campaign": "line_message",     "content": "rich_menu",        "weight": 2},
 ]
 
 
-def pick_traffic_source() -> dict:
-    """Pick a traffic source for a session."""
+def pick_traffic_source(active_campaigns: list[dict] = None) -> dict:
+    """Pick a traffic source for a session.
+
+    During active campaigns, CPC and email sources get boosted weights.
+    """
     weights = [s["weight"] for s in SOURCES]
+
+    if active_campaigns:
+        # Find max multipliers from all active campaigns
+        cpc_mult = max((c.get("cpc_multiplier", 1.0) for c in active_campaigns), default=1.0)
+        email_mult = max((c.get("email_multiplier", 1.0) for c in active_campaigns), default=1.0)
+
+        for i, s in enumerate(SOURCES):
+            if s["medium"] == "cpc":
+                weights[i] *= cpc_mult
+            elif s["medium"] == "email":
+                weights[i] *= email_mult
+
     src = weighted_choice(SOURCES, weights)
     result = {
         "source": src["source"],
@@ -63,11 +82,7 @@ def build_collected_traffic_source(src: dict) -> dict:
 
 
 def build_session_traffic_source_last_click(src: dict) -> dict:
-    """Build GA4 session_traffic_source_last_click record.
-
-    This reflects the last non-direct click source for the session,
-    matching the GA4 BigQuery Export schema.
-    """
+    """Build GA4 session_traffic_source_last_click record."""
     manual = {
         "source": src["source"],
         "medium": src["medium"],

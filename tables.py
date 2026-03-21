@@ -169,7 +169,7 @@ def write_orders_csv(
                 "order_id":        p["transaction_id"],
                 "customer_id":     p.get("user_id") or "",   # blank = guest
                 "order_date":      p["order_datetime"].strftime("%Y-%m-%d"),
-                "order_datetime":  p["order_datetime"].strftime("%Y-%m-%d %H:%M:%S"),
+                "order_datetime":  p["order_datetime"].isoformat(),
                 "status":          status,
                 "subtotal":        int(p["subtotal"]),
                 "coupon_code":     p.get("coupon_code") or "",
