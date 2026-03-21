@@ -8,17 +8,31 @@ GA4（Google Analytics 4）の EC（eコマース）デモデータを生成す�
 
 BigQuery 上の GA4 eコマースイベントデータを模したデモデータを生成します。開発・テスト・デモ環境で、本番データを使わずに GA4 データパイプラインの検証や BI ダッシュボードのプロトタイピングを行うことを目的としています。
 
+### リアリズム機能
+
+- **ユーザーセグメント** — 新規/リピーター/ロイヤルユーザーでコンバージョン率が異なる
+- **カテゴリ親和性** — ユーザーごとに1〜3個の好みカテゴリを保持
+- **デバイス別行動差** — モバイルユーザーはコンバージョン率がやや低い
+- **曜日変動** — 週末はトラフィックが20〜25%増加
+- **時間帯分布** — 昼休み（12時台）と夜間（20〜21時台）にピーク
+- **キャンペーンスパイク** — 設定期間中にCPC/メール流入が急増
+- **パレート分布の商品人気** — 上位20%の商品が閲覧・売上の約80%を占める
+- **季節商品** — 月に応じた商品ウェイト変動（夏に扇風機、冬に加湿器等）
+- **流入元×ランディングページ相関** — CPC→セール/LP、organic→トップページ
+- **データ品質ノイズ** — 5%のuser_id欠損、2%のbot的セッション、8%の決済エラー→リトライ
+- **EC受注データとGA4 purchaseの完全一致** — タイムスタンプ・金額・商品が完全に一致
+
 ## 生成されるテーブル一覧
 
 | テーブル | ファイル | 形式 | カラム数 | レコード数（目安）|
 |---|---|---|---|---|
-| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL（日別） | 25列（リーフ展開100列超） | 約3,600行/日 |
+| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL（日別） | 25列（リーフ展開100列超） | 約4,300行/日 |
 | customers | `output/customers.csv` | CSV | 8列 | ユーザー数 × ログイン率 |
-| products | `output/products.csv` | CSV | 9列 | 20行（固定） |
+| products | `output/products.csv` | CSV | 9列 | 60行（固定） |
 | orders | `output/orders.csv` | CSV | 14列 | GA4 purchase イベント数と一致 |
 | order_items | `output/order_items.csv` | CSV | 8列 | 注文数 × 平均購入点数 |
 
-> デフォルト設定（1,000ユーザー・31日間）の実行例：events 113,689行 / customers 301行 / orders 1,059行 / order_items 1,262行
+> デフォルト設定（1,000ユーザー・31日間）の実行例：events 約133,000行 / customers 約285行 / orders 約1,600行 / order_items 約1,800行
 
 ### テーブル間の結合キー
 
@@ -130,7 +144,7 @@ orders.order_id        <->  GA4 events.transaction_id（purchaseイベント）
 
 | カラム | 型 | NULLABLE | 備考 |
 |---|---|---|---|
-| `item_id` | STRING | NO | SKU001〜SKU020 |
+| `item_id` | STRING | NO | SKU001〜SKU080 |
 | `item_name` | STRING | NO | |
 | `item_brand` | STRING | NO | |
 | `item_variant` | STRING | YES | |
@@ -511,12 +525,36 @@ users:
   sessions_per_day_range: [1, 3]
 
 funnel:
-  browse_to_view_item: 0.70
+  browse_to_view_item: 0.70       # 基本ファネル率（セグメントで自動調整）
   view_item_to_add_to_cart: 0.30
   add_to_cart_to_remove: 0.10
   add_to_cart_to_checkout: 0.60
   checkout_to_purchase: 0.75
   promotion_probability: 0.15
+
+# 曜日別トラフィック係数（月=0 .. 日=6）
+day_of_week_weights:
+  0: 0.90   # 月曜
+  1: 0.95   # 火曜
+  2: 1.00   # 水曜
+  3: 1.00   # 木曜
+  4: 1.10   # 金曜
+  5: 1.25   # 土曜
+  6: 1.20   # 日曜
+
+# キャンペーン期間：CPC/メール流入が増加
+campaigns:
+  - name: "new_year_sale"
+    start: "2025-01-01"
+    end: "2025-01-03"
+    cpc_multiplier: 2.5
+    email_multiplier: 1.8
+
+# データ品質ノイズ設定
+noise:
+  null_user_id_rate: 0.05      # ログインユーザーの5%でuser_idがnull
+  bot_session_rate: 0.02       # 2%のセッションがbot的挙動
+  payment_failure_rate: 0.08   # 8%のチェックアウトで決済エラー→リトライ
 
 output:
   directory: "./output"

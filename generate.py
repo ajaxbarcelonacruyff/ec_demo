@@ -59,12 +59,19 @@ def main():
     output_dir = Path(config.get("output", {}).get("directory", "./output"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Normalize day_of_week_weights keys to int
+    raw_dow = config.get("day_of_week_weights", {})
+    dow_weights = {int(k): v for k, v in raw_dow.items()}
+
     gen_config = {
         "daily_active_ratio":     config["users"]["daily_active_ratio"],
         "sessions_per_day_range": config["users"]["sessions_per_day_range"],
         "funnel":                 config.get("funnel", {}),
         "stream_id":              config.get("settings", {}).get("stream_id", "1234567890"),
         "currency":               config.get("settings", {}).get("currency", "JPY"),
+        "day_of_week_weights":    dow_weights,
+        "campaigns":              config.get("campaigns", []),
+        "noise":                  config.get("noise", {}),
     }
 
     # ------------------------------------------------------------------ users
@@ -76,9 +83,9 @@ def main():
     )
 
     # ------------------------------------------------------------------ events
-    pending_refunds: list[dict] = []   # {info: purchase_info, refund_date: datetime}
-    all_purchases:   list[dict] = []   # every purchase_info (for orders/order_items)
-    refunded_ids:    set[str]   = set() # transaction_ids that got refunded
+    pending_refunds: list[dict] = []
+    all_purchases:   list[dict] = []
+    refunded_ids:    set[str]   = set()
 
     current_date = start_date
     total_events = 0
@@ -96,11 +103,9 @@ def main():
             due_refunds=[r["info"] for r in due_today],
         )
 
-        # Track refunded transaction IDs (for order status)
         for r in due_today:
             refunded_ids.add(r["info"]["transaction_id"])
 
-        # Collect all purchases; schedule future refunds
         all_purchases.extend(new_purchases)
         for p in new_purchases:
             if random.random() < REFUND_RATE:

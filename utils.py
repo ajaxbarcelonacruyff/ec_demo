@@ -44,18 +44,37 @@ def event_date_from_nz(dt: datetime) -> str:
 
 
 def random_time_of_day() -> timedelta:
-    """Weighted random time-of-day (business hours peak in NZ)."""
-    # Weight toward 8am-10pm NZ time
-    hour_weights = (
-        [1] * 6    # 0-5: low
-        + [3] * 2  # 6-7: rising
-        + [8] * 4  # 8-11: morning peak
-        + [10] * 2 # 12-13: lunch peak
-        + [7] * 4  # 14-17: afternoon
-        + [9] * 3  # 18-20: evening peak
-        + [5] * 2  # 21-22: winding down
-        + [2] * 1  # 23: late
-    )
+    """Weighted random time-of-day with realistic EC patterns.
+
+    Peaks at lunch (12-13h) and evening (20-22h).
+    Low traffic 0-6am, moderate morning, dip in afternoon.
+    """
+    hour_weights = [
+        1,   # 0
+        1,   # 1
+        0.5, # 2
+        0.3, # 3
+        0.2, # 4
+        0.3, # 5
+        1,   # 6
+        3,   # 7
+        6,   # 8
+        8,   # 9
+        9,   # 10
+        9,   # 11
+        12,  # 12 - lunch peak
+        11,  # 13
+        7,   # 14
+        7,   # 15
+        7,   # 16
+        8,   # 17
+        9,   # 18
+        10,  # 19
+        12,  # 20 - evening peak
+        13,  # 21 - evening peak
+        8,   # 22
+        4,   # 23
+    ]
     hour = random.choices(range(24), weights=hour_weights, k=1)[0]
     minute = random.randint(0, 59)
     second = random.randint(0, 59)
@@ -66,3 +85,18 @@ def random_time_of_day() -> timedelta:
 def weighted_choice(options: list, weights: list):
     """Weighted random selection."""
     return random.choices(options, weights=weights, k=1)[0]
+
+
+def is_campaign_active(date_obj, campaigns: list[dict]) -> list[dict]:
+    """Return list of active campaigns for a given date."""
+    active = []
+    if hasattr(date_obj, 'date') and callable(date_obj.date):
+        d = date_obj.date()
+    else:
+        d = date_obj
+    for c in campaigns:
+        start = datetime.strptime(c["start"], "%Y-%m-%d").date() if isinstance(c["start"], str) else c["start"]
+        end = datetime.strptime(c["end"], "%Y-%m-%d").date() if isinstance(c["end"], str) else c["end"]
+        if start <= d <= end:
+            active.append(c)
+    return active

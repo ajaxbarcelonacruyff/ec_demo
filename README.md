@@ -8,17 +8,31 @@ GA4 (Google Analytics 4) ecommerce demo data generator for BigQuery.
 
 Generates realistic GA4 BigQuery Export-format ecommerce event data along with relational tables (customers, products, orders, order_items). Designed for development, testing, and demo environments where production data is not available — ideal for validating GA4 data pipelines and prototyping BI dashboards.
 
+### Realism Features
+
+- **User segments** — New / returning / loyal users have different conversion rates
+- **Category affinity** — Each user has 1-3 preferred product categories
+- **Device-based behavior** — Mobile users have slightly lower conversion rates
+- **Day-of-week variation** — Weekend traffic is 20-25% higher than weekdays
+- **Hourly distribution** — Peaks at lunch (12h) and evening (20-21h)
+- **Campaign spikes** — Configurable campaign periods boost CPC/email traffic
+- **Pareto product popularity** — Top 20% of products generate ~80% of views/sales
+- **Seasonal products** — Some products are boosted/dampened by month (e.g., fans in summer)
+- **Traffic source ↔ landing page correlation** — CPC → sale/LP pages, organic → top page
+- **Data quality noise** — 5% null user_id, 2% bot sessions, 8% payment failures with retry
+- **EC order ↔ GA4 purchase consistency** — Timestamps, amounts, and items match exactly
+
 ## Generated Tables
 
 | Table | File | Format | Columns | Rows (approx.) |
 |---|---|---|---|---|
-| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL (daily) | 25 (100+ leaf) | ~3,600/day |
+| GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL (daily) | 25 (100+ leaf) | ~4,300/day |
 | customers | `output/customers.csv` | CSV | 8 | users x login rate |
-| products | `output/products.csv` | CSV | 9 | 20 (fixed) |
+| products | `output/products.csv` | CSV | 9 | 60 (fixed) |
 | orders | `output/orders.csv` | CSV | 14 | = GA4 purchase events |
 | order_items | `output/order_items.csv` | CSV | 8 | orders x avg items |
 
-> Default settings (1,000 users, 31 days): events 113,689 / customers 301 / orders 1,059 / order_items 1,262
+> Default settings (1,000 users, 31 days): events ~133,000 / customers ~285 / orders ~1,600 / order_items ~1,800
 
 ### Join Keys
 
@@ -130,7 +144,7 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 
 | Column | Type | NULLABLE | Notes |
 |---|---|---|---|
-| `item_id` | STRING | NO | SKU001-SKU020 |
+| `item_id` | STRING | NO | SKU001-SKU080 |
 | `item_name` | STRING | NO | |
 | `item_brand` | STRING | NO | |
 | `item_variant` | STRING | YES | |
@@ -511,12 +525,36 @@ users:
   sessions_per_day_range: [1, 3]
 
 funnel:
-  browse_to_view_item: 0.70
+  browse_to_view_item: 0.70       # Base rates (adjusted per segment)
   view_item_to_add_to_cart: 0.30
   add_to_cart_to_remove: 0.10
   add_to_cart_to_checkout: 0.60
   checkout_to_purchase: 0.75
   promotion_probability: 0.15
+
+# Day-of-week traffic multipliers (Mon=0 .. Sun=6)
+day_of_week_weights:
+  0: 0.90   # Monday
+  1: 0.95   # Tuesday
+  2: 1.00   # Wednesday
+  3: 1.00   # Thursday
+  4: 1.10   # Friday
+  5: 1.25   # Saturday
+  6: 1.20   # Sunday
+
+# Campaign periods: CPC/email traffic boosted during these windows
+campaigns:
+  - name: "new_year_sale"
+    start: "2025-01-01"
+    end: "2025-01-03"
+    cpc_multiplier: 2.5
+    email_multiplier: 1.8
+
+# Data quality noise settings
+noise:
+  null_user_id_rate: 0.05      # 5% of logged-in user events have null user_id
+  bot_session_rate: 0.02       # 2% of sessions are bot-like
+  payment_failure_rate: 0.08   # 8% of checkout attempts fail, then retry
 
 output:
   directory: "./output"

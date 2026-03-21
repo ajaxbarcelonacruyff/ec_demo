@@ -154,14 +154,22 @@ def migrate_event(event: dict) -> dict:
 
 
 def migrate_file(input_path: str, output_path: str) -> int:
-    """Migrate a single JSONL file. Returns event count."""
-    count = 0
-    with open(input_path, "r") as fin, open(output_path, "w") as fout:
+    """Migrate a single JSONL file. Returns event count.
+
+    Handles in-place migration (input_path == output_path) safely.
+    """
+    # Read all events first (required for in-place)
+    events = []
+    with open(input_path, "r") as fin:
         for line in fin:
             line = line.strip()
             if not line:
                 continue
-            event = json.loads(line)
+            events.append(json.loads(line))
+
+    count = 0
+    with open(output_path, "w") as fout:
+        for event in events:
             event = migrate_event(event)
             fout.write(
                 json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
