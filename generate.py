@@ -31,8 +31,78 @@ REFUND_RATE = 0.05
 
 
 def load_config(config_path: str) -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
+    p = Path(config_path)
+    if not p.exists():
+        print(f"Error: config file not found: {config_path}", file=__import__('sys').stderr)
+        raise SystemExit(1)
+    if p.suffix not in (".yaml", ".yml"):
+        print(f"Error: config file must be .yaml or .yml: {config_path}", file=__import__('sys').stderr)
+        raise SystemExit(1)
+    with open(p, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def validate_config(cfg: dict) -> None:
+    """Validate config values have correct types and ranges."""
+    errors: list[str] = []
+
+    # Required top-level sections
+    for section in ("date_range", "users"):
+        if section not in cfg:
+            errors.append(f"Missing required section: '{section}'")
+    if errors:
+        _exit_with_errors(errors)
+
+    # date_range
+    dr = cfg["date_range"]
+    for key in ("start", "end"):
+        val = dr.get(key)
+        if not isinstance(val, str):
+            errors.append(f"date_range.{key} must be a string, got: {val!r}")
+        else:
+            try:
+                datetime.strptime(val, "%Y-%m-%d")
+            except ValueError:
+                errors.append(f"date_range.{key} must be YYYY-MM-DD format, got: {val!r}")
+
+    # users
+    users = cfg["users"]
+    total = users.get("total")
+    if not isinstance(total, int) or total <= 0:
+        errors.append(f"users.total must be a positive integer, got: {total!r}")
+
+    for ratio_key in ("logged_in_ratio", "daily_active_ratio"):
+        val = users.get(ratio_key)
+        if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+            errors.append(f"users.{ratio_key} must be a float between 0 and 1, got: {val!r}")
+
+    sess_range = users.get("sessions_per_day_range")
+    if not (isinstance(sess_range, list) and len(sess_range) == 2
+            and all(isinstance(x, int) and x > 0 for x in sess_range)):
+        errors.append(
+            f"users.sessions_per_day_range must be a list of two positive integers, got: {sess_range!r}"
+        )
+    elif sess_range[0] > sess_range[1]:
+        errors.append(
+            f"users.sessions_per_day_range[0] must be <= [1], got: {sess_range}"
+        )
+
+    # funnel rates (optional section, but validate if present)
+    funnel = cfg.get("funnel", {})
+    for fkey, fval in funnel.items():
+        if not isinstance(fval, (int, float)) or not (0.0 <= fval <= 1.0):
+            errors.append(f"funnel.{fkey} must be a float between 0 and 1, got: {fval!r}")
+
+    if errors:
+        _exit_with_errors(errors)
+
+
+def _exit_with_errors(errors: list[str]) -> None:
+    import sys
+    print("Config validation errors:", file=sys.stderr)
+    for e in errors:
+        print(f"  - {e}", file=sys.stderr)
+    raise SystemExit(1)
 
 
 def main():
@@ -45,6 +115,7 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config)
+    validate_config(config)
 
     start_str   = args.start or config["date_range"]["start"]
     end_str     = args.end   or config["date_range"]["end"]

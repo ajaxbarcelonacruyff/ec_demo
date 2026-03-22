@@ -179,11 +179,34 @@ def migrate_file(input_path: str, output_path: str) -> int:
 
 
 def main():
-    input_dir = "output"
-    output_dir = "output_v2"
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Migrate JSONL events to latest GA4 schema")
+    parser.add_argument("--input-dir", default="output", help="Input directory (default: output)")
+    parser.add_argument("--output-dir", default="output_v2", help="Output directory (default: output_v2)")
+    args = parser.parse_args()
+
+    input_dir = args.input_dir
+    output_dir = args.output_dir
+
+    if not os.path.isdir(input_dir):
+        print(f"Error: input directory not found: {input_dir}", file=__import__('sys').stderr)
+        raise SystemExit(1)
+
+    if os.path.abspath(input_dir) == os.path.abspath(output_dir):
+        print(
+            "Error: output directory must be different from input directory to prevent data loss.",
+            file=__import__('sys').stderr,
+        )
+        raise SystemExit(1)
+
     os.makedirs(output_dir, exist_ok=True)
 
     files = sorted(glob.glob(os.path.join(input_dir, "events_*.jsonl")))
+    if not files:
+        print(f"No events_*.jsonl files found in {input_dir}")
+        return
+
     total = 0
     for fpath in files:
         fname = os.path.basename(fpath)
