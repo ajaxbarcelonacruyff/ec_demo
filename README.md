@@ -2,33 +2,36 @@
 
 > **[日本語版 README はこちら (README_ja.md)](README_ja.md)**
 
-GA4 (Google Analytics 4) ecommerce demo data generator for BigQuery.
+Statistically realistic GA4 BigQuery export data — generated, not fabricated.
 
-## Overview
+## Table of Contents
 
-Generates realistic GA4 BigQuery Export-format ecommerce event data along with relational tables (customers, products, orders, order_items). Designed for development, testing, and demo environments where production data is not available — ideal for validating GA4 data pipelines and prototyping BI dashboards.
+[Why This Exists](#why-this-exists) | [What It Generates](#what-it-generates) | [Realism Features](#realism-features) | [Quick Start](#quick-start) | [Configuration](#configuration-configyaml) | [Schema Reference](#schema-reference) | [Data Mart Views](#data-mart-views) | [File Structure](#file-structure)
 
-### Realism Features
+---
 
-- **User segments** — New / returning / loyal users have different conversion rates
-- **Category affinity** — Each user has 1-3 preferred product categories
-- **Device-based behavior** — Mobile users have slightly lower conversion rates
-- **Day-of-week variation** — Weekend traffic is 20-25% higher than weekdays
-- **Hourly distribution** — Peaks at lunch (12h) and evening (20-21h)
-- **Campaign spikes** — Configurable campaign periods boost CPC/email traffic
-- **Pareto product popularity** — Top 20% of products generate ~80% of views/sales
-- **Seasonal products** — Some products are boosted/dampened by month (e.g., fans in summer)
-- **Traffic source ↔ landing page correlation** — CPC → sale/LP pages, organic → top page
-- **Data quality noise** — 5% null user_id, 2% bot sessions, 8% payment failures with retry
-- **EC order ↔ GA4 purchase consistency** — Timestamps, amounts, and items match exactly
+## Why This Exists
 
-## Generated Tables
+GA4's BigQuery export format is deeply nested and statistically structured. Most synthetic data generators produce flat, uniformly distributed records that look nothing like real ecommerce traffic. The problems that causes are practical:
+
+- **Funnel queries break** when every session has the same conversion probability, because your SQL assumes realistic drop-off rates between stages.
+- **Dashboard prototypes mislead** when traffic sources, device types, and purchase amounts are uniformly distributed — every chart looks like a straight line.
+- **Schema validation fails** when test data omits the nested fields that real GA4 exports always include (`session_traffic_source_last_click`, `batch_*` columns, `collected_traffic_source`).
+- **Event ordering logic is untestable** when events lack the `batch_page_id / batch_ordering_id / batch_event_index` triplet that GA4 uses to sequence simultaneous arrivals.
+
+ec_demo generates synthetic ecommerce events with real behavioral patterns: Pareto-distributed product popularity, user-segment-specific conversion rates, correlated traffic source and landing page assignments, payment failures with retry sequences, and purchase propensity drawn from a Beta distribution rather than a coin flip. The relational tables (customers, products, orders, order_items) join cleanly to the GA4 events via shared keys, so you can test cross-dataset queries without massaging the data first.
+
+The output is JSONL in GA4 BigQuery Export format, loadable with the included `bigquery_load.py` script. It is designed for development, testing, and demo environments where production data is not available.
+
+---
+
+## What It Generates
 
 | Table | File | Format | Columns | Rows (approx.) |
 |---|---|---|---|---|
 | GA4 events | `output/events_YYYYMMDD.jsonl` | JSONL (daily) | 25 (100+ leaf) | ~4,300/day |
 | customers | `output/customers.csv` | CSV | 8 | users x login rate |
-| products | `output/products.csv` | CSV | 9 | 60 (fixed) |
+| products | `output/products.csv` | CSV | 9 | 80 (fixed) |
 | orders | `output/orders.csv` | CSV | 14 | = GA4 purchase events |
 | order_items | `output/order_items.csv` | CSV | 8 | orders x avg items |
 
@@ -53,11 +56,263 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 
 ---
 
-## Schema Details
+## Realism Features
+
+- **User segments** — New / returning / loyal users have different conversion rates
+- **Category affinity** — Each user has 1-3 preferred product categories
+- **Device-based behavior** — Mobile users have slightly lower conversion rates
+- **Day-of-week variation** — Weekend traffic is 20-25% higher than weekdays
+- **Hourly distribution** — Peaks at lunch (12h) and evening (20-21h)
+- **Campaign spikes** — Configurable campaign periods boost CPC/email traffic
+- **Pareto product popularity** — Top 20% of products generate ~80% of views/sales
+- **Seasonal products** — Some products are boosted/dampened by month (e.g., fans in summer)
+- **Traffic source to landing page correlation** — CPC → sale/LP pages, organic → top page
+- **Data quality noise** — 5% null user_id, 2% bot sessions, 8% payment failures with retry
+- **Payment failure retry** — Failed checkout attempts generate a realistic `add_payment_info` → failure → retry → `purchase` sequence before the order is recorded
+- **Purchase propensity via Beta distribution** — Each user's baseline conversion probability is drawn from Beta(2,5) rather than a fixed rate, producing the long-tail of low-converting users seen in real stores
+- **Config validation on startup** — `generate.py` validates `config.yaml` at launch: checks file paths exist and that numeric values are within legal ranges, failing fast with a descriptive error rather than producing invalid data silently
+- **EC order to GA4 purchase consistency** — Timestamps, amounts, and items match exactly
+
+---
+
+## Quick Start
+
+### 1. Create Virtual Environment and Install Dependencies
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 2. Generate Demo Data
+
+```bash
+python generate.py
+```
+
+Override period, user count, or seed via command-line options:
+
+```bash
+python generate.py --start 2025-01-01 --end 2025-03-31 --users 5000 --seed 123
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `-c`, `--config` | `config.yaml` | Config file path |
+| `--start` | config `date_range.start` | Start date (YYYY-MM-DD) |
+| `--end` | config `date_range.end` | End date (YYYY-MM-DD) |
+| `--users` | config `users.total` | Total user count |
+| `--seed` | config `settings.seed` | Random seed |
+
+Generated files:
+
+```
+output/
+├── events_20250101.jsonl   # GA4 events (daily JSONL)
+├── events_20250102.jsonl
+├── ...
+├── customers.csv
+├── products.csv
+├── orders.csv
+└── order_items.csv
+```
+
+### 3. Migrate Schema (optional)
+
+If you have existing output generated against an older schema, use `migrate_schema.py` to add new GA4 fields without regenerating:
+
+```bash
+python migrate_schema.py --input-dir output --output-dir output_v2
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--input-dir` | `output` | Directory containing existing JSONL files |
+| `--output-dir` | `output_v2` | Destination directory for migrated files |
+
+The input and output directories must be different — the script refuses in-place overwrite to prevent data loss.
+
+If your output has incorrect event ordering within sessions (events with identical timestamps), use `fix_event_order.py`:
+
+```bash
+python fix_event_order.py --input-dir output --output-dir output_fixed
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--input-dir` | `output` | Directory containing existing JSONL files |
+| `--output-dir` | `output_fixed` | Destination directory for reordered files |
+
+The input and output directories must be different.
+
+### 4. Load into BigQuery
+
+#### Prerequisites
+
+| Item | Description | Example |
+|---|---|---|
+| GCP Project ID | Project with BigQuery enabled | `my-project-123` |
+| Dataset name | Dataset to create (auto-created if missing) | `ec_demo` |
+| Location | Dataset region | `asia-northeast1` (Tokyo) / `US` / `EU` |
+| Authentication | One of the methods below | - |
+
+#### Authentication
+
+**Option A: gcloud CLI (recommended for local use)**
+
+```bash
+# Install gcloud CLI if not already installed
+# https://cloud.google.com/sdk/docs/install
+
+gcloud auth application-default login
+```
+
+**Option B: Service account key**
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+```
+
+Required IAM roles for the service account:
+- `BigQuery Data Editor` (create/write datasets and tables)
+- `BigQuery Job User` (run load jobs)
+
+#### Run the Loader
+
+```bash
+python bigquery_load.py \
+  --project YOUR_PROJECT_ID \
+  --dataset ec_demo \
+  --location asia-northeast1
+```
+
+With an explicit service account key:
+
+```bash
+python bigquery_load.py \
+  --project YOUR_PROJECT_ID \
+  --dataset ec_demo \
+  --location asia-northeast1 \
+  --key-file /path/to/service-account-key.json
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--project` | (required) | GCP project ID |
+| `--dataset` | (required) | BigQuery dataset name |
+| `--location` | `asia-northeast1` | Dataset location |
+| `--output-dir` | `./output` | Directory containing generated files |
+| `--key-file` | None (uses ADC) | Path to service account key JSON |
+
+#### Table Layout After Loading
+
+GA4 events are created as date-sharded tables, matching the real GA4 BigQuery Export format.
+
+```
+{dataset}/
+├── events_20250101     # GA4 events (daily tables)
+├── events_20250102
+├── ...
+├── customers
+├── products
+├── orders
+└── order_items
+```
+
+### 5. Create Data Mart Views
+
+After loading tables into BigQuery, create the data mart views.
+
+```bash
+# Replace PROJECT_ID.DATASET with your actual values
+sed 's/PROJECT_ID\.DATASET/YOUR_PROJECT_ID.ec_demo/g' sql/mart/v_events_flat.sql \
+  | bq query --use_legacy_sql=false
+```
+
+Alternatively, paste the contents of `sql/mart/v_events_flat.sql` into the BigQuery console and replace `PROJECT_ID.DATASET` manually.
+
+#### Dataset Layout After View Creation
+
+```
+{dataset}/
+├── events_20250101     # GA4 events (daily tables)
+├── events_20250102
+├── ...
+├── customers
+├── products
+├── orders
+├── order_items
+└── v_events_flat       # Event flattening view
+```
+
+Verify in the BigQuery console:
+`https://console.cloud.google.com/bigquery?project=YOUR_PROJECT_ID`
+
+---
+
+## Configuration (config.yaml)
+
+```yaml
+date_range:
+  start: "2025-01-01"
+  end: "2025-01-31"
+
+users:
+  total: 1000               # Total user pool size
+  logged_in_ratio: 0.3      # Ratio of logged-in users
+  daily_active_ratio: 0.15  # Daily active user rate
+  sessions_per_day_range: [1, 3]
+
+funnel:
+  browse_to_view_item: 0.70       # Base rates (adjusted per segment)
+  view_item_to_add_to_cart: 0.30
+  add_to_cart_to_remove: 0.10
+  add_to_cart_to_checkout: 0.60
+  checkout_to_purchase: 0.75
+  promotion_probability: 0.15
+
+# Day-of-week traffic multipliers (Mon=0 .. Sun=6)
+day_of_week_weights:
+  0: 0.90   # Monday
+  1: 0.95   # Tuesday
+  2: 1.00   # Wednesday
+  3: 1.00   # Thursday
+  4: 1.10   # Friday
+  5: 1.25   # Saturday
+  6: 1.20   # Sunday
+
+# Campaign periods: CPC/email traffic boosted during these windows
+campaigns:
+  - name: "new_year_sale"
+    start: "2025-01-01"
+    end: "2025-01-03"
+    cpc_multiplier: 2.5
+    email_multiplier: 1.8
+
+# Data quality noise settings
+noise:
+  null_user_id_rate: 0.05      # 5% of logged-in user events have null user_id
+  bot_session_rate: 0.02       # 2% of sessions are bot-like
+  payment_failure_rate: 0.08   # 8% of checkout attempts fail, then retry
+
+output:
+  directory: "./output"
+
+settings:
+  stream_id: "1234567890"
+  currency: "JPY"
+  seed: 42
+```
+
+---
+
+## Schema Reference
 
 ### GA4 events (JSONL, BigQuery Export format)
 
-#### Top-level columns (25)
+<details>
+<summary>Top-level columns (25)</summary>
 
 | Column | Type | NULLABLE | Description |
 |---|---|---|---|
@@ -87,7 +342,10 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `batch_ordering_id` | INTEGER | YES | Increments per batch |
 | `batch_event_index` | INTEGER | YES | Event sequence within a batch |
 
-#### Event Types (19)
+</details>
+
+<details>
+<summary>Event Types (19)</summary>
 
 | Event Name | Category | Description |
 |---|---|---|
@@ -111,7 +369,10 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `purchase` | EC Recommended | Purchase complete |
 | `refund` | EC Recommended | Refund (~5% of purchases, 3-14 days later) |
 
-#### event_params Keys (24)
+</details>
+
+<details>
+<summary>event_params Keys (24)</summary>
 
 | Key | Value Type | Primary Events |
 |---|---|---|
@@ -140,7 +401,10 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `creative_slot` | string | view_promotion, select_promotion |
 | `method` | string | sign_up, login |
 
-#### items columns (25)
+</details>
+
+<details>
+<summary>items columns (25)</summary>
 
 | Column | Type | NULLABLE | Notes |
 |---|---|---|---|
@@ -170,7 +434,10 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `location_id` | STRING | YES | |
 | `item_params` | RECORD REPEATED | YES | Custom item parameters |
 
-#### ecommerce columns (9, purchase events only)
+</details>
+
+<details>
+<summary>ecommerce columns (9, purchase events only)</summary>
 
 | Column | Type | Description |
 |---|---|---|
@@ -184,10 +451,13 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `total_item_quantity` | INTEGER | |
 | `unique_items` | INTEGER | |
 
-#### device columns (12)
+</details>
 
-| Column | Type | NULLABLE |
-|---|---|---|
+<details>
+<summary>device columns (12)</summary>
+
+| Column | Type | NULLABLE | Notes |
+|---|---|---|---|
 | `category` | STRING | NO | mobile / desktop / tablet |
 | `operating_system` | STRING | NO | |
 | `operating_system_version` | STRING | NO | |
@@ -201,19 +471,27 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 | `web_info.browser_version` | STRING | NO | |
 | `web_info.hostname` | STRING | NO | |
 
-#### geo columns (6)
+</details>
+
+<details>
+<summary>geo, traffic_source, collected_traffic_source columns</summary>
+
+**geo columns (6)**
 
 `continent` / `sub_continent` / `country` / `region` / `city` / `metro`
 
-#### traffic_source columns (3, user first-touch)
+**traffic_source columns (3, user first-touch)**
 
 `source` / `medium` / `name`
 
-#### collected_traffic_source columns (11, session-level)
+**collected_traffic_source columns (11, session-level)**
 
 `manual_source` / `manual_medium` / `manual_campaign_name` / `manual_content` (nullable) / `manual_term` (nullable) / `gclid` (nullable) / `dclid` (nullable) / `srsltid` (nullable) / `manual_source_platform` (nullable) / `manual_creative_format` (nullable) / `manual_marketing_tactic` (nullable)
 
-#### session_traffic_source_last_click columns (session last-click source)
+</details>
+
+<details>
+<summary>session_traffic_source_last_click (session last-click source)</summary>
 
 ```
 session_traffic_source_last_click
@@ -255,7 +533,12 @@ session_traffic_source_last_click
     └── site_id
 ```
 
-#### privacy_info columns (3)
+</details>
+
+<details>
+<summary>privacy_info and batch columns</summary>
+
+**privacy_info columns (3)**
 
 | Column | Type | Description |
 |---|---|---|
@@ -263,7 +546,7 @@ session_traffic_source_last_click
 | `analytics_storage` | STRING | Consent status for analytics storage (Yes/No) |
 | `uses_transient_token` | STRING | Whether transient token is used (Yes/No) |
 
-#### batch columns (3, for determining event order)
+**batch columns (3, for determining event order)**
 
 | Column | Type | Description |
 |---|---|---|
@@ -272,6 +555,8 @@ session_traffic_source_last_click
 | `batch_event_index` | INTEGER | Event sequence within a batch (0-based) |
 
 > `event_timestamp` is the arrival time at the GA4 server, and multiple events can arrive simultaneously. To determine the correct event order, use `event_timestamp, batch_page_id, batch_ordering_id, batch_event_index` in that priority.
+
+</details>
 
 ---
 
@@ -365,211 +650,11 @@ A base view that flattens the nested GA4 BigQuery Export structure and enriches 
 
 ---
 
-## Setup and Usage
-
-### 1. Create Virtual Environment and Install Dependencies
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 2. Generate Demo Data
-
-```bash
-python generate.py
-```
-
-Override period, user count, or seed via command-line options:
-
-```bash
-python generate.py --start 2025-01-01 --end 2025-03-31 --users 5000 --seed 123
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `-c`, `--config` | `config.yaml` | Config file path |
-| `--start` | config `date_range.start` | Start date (YYYY-MM-DD) |
-| `--end` | config `date_range.end` | End date (YYYY-MM-DD) |
-| `--users` | config `users.total` | Total user count |
-| `--seed` | config `settings.seed` | Random seed |
-
-Generated files:
-
-```
-output/
-├── events_20250101.jsonl   # GA4 events (daily JSONL)
-├── events_20250102.jsonl
-├── ...
-├── customers.csv
-├── products.csv
-├── orders.csv
-└── order_items.csv
-```
-
-### 3. Load into BigQuery
-
-#### Prerequisites
-
-| Item | Description | Example |
-|---|---|---|
-| GCP Project ID | Project with BigQuery enabled | `my-project-123` |
-| Dataset name | Dataset to create (auto-created if missing) | `ec_demo` |
-| Location | Dataset region | `asia-northeast1` (Tokyo) / `US` / `EU` |
-| Authentication | One of the methods below | - |
-
-#### Authentication
-
-**Option A: gcloud CLI (recommended for local use)**
-
-```bash
-# Install gcloud CLI if not already installed
-# https://cloud.google.com/sdk/docs/install
-
-gcloud auth application-default login
-```
-
-**Option B: Service account key**
-
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
-```
-
-Required IAM roles for the service account:
-- `BigQuery Data Editor` (create/write datasets and tables)
-- `BigQuery Job User` (run load jobs)
-
-#### Run the Loader
-
-```bash
-python bigquery_load.py \
-  --project YOUR_PROJECT_ID \
-  --dataset ec_demo \
-  --location asia-northeast1
-```
-
-With an explicit service account key:
-
-```bash
-python bigquery_load.py \
-  --project YOUR_PROJECT_ID \
-  --dataset ec_demo \
-  --location asia-northeast1 \
-  --key-file /path/to/service-account-key.json
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--project` | (required) | GCP project ID |
-| `--dataset` | (required) | BigQuery dataset name |
-| `--location` | `asia-northeast1` | Dataset location |
-| `--output-dir` | `./output` | Directory containing generated files |
-| `--key-file` | None (uses ADC) | Path to service account key JSON |
-
-#### Table Layout After Loading
-
-GA4 events are created as date-sharded tables, matching the real GA4 BigQuery Export format.
-
-```
-{dataset}/
-├── events_20250101     # GA4 events (daily tables)
-├── events_20250102
-├── ...
-├── customers
-├── products
-├── orders
-└── order_items
-```
-
-### 4. Create Data Mart Views
-
-After loading tables into BigQuery, create the data mart views.
-
-```bash
-# Replace PROJECT_ID.DATASET with your actual values
-sed 's/PROJECT_ID\.DATASET/YOUR_PROJECT_ID.ec_demo/g' sql/mart/v_events_flat.sql \
-  | bq query --use_legacy_sql=false
-```
-
-Alternatively, paste the contents of `sql/mart/v_events_flat.sql` into the BigQuery console and replace `PROJECT_ID.DATASET` manually.
-
-#### Dataset Layout After View Creation
-
-```
-{dataset}/
-├── events_20250101     # GA4 events (daily tables)
-├── events_20250102
-├── ...
-├── customers
-├── products
-├── orders
-├── order_items
-└── v_events_flat       # Event flattening view
-```
-
-Verify in the BigQuery console:
-`https://console.cloud.google.com/bigquery?project=YOUR_PROJECT_ID`
-
-## Configuration (config.yaml)
-
-```yaml
-date_range:
-  start: "2025-01-01"
-  end: "2025-01-31"
-
-users:
-  total: 1000               # Total user pool size
-  logged_in_ratio: 0.3      # Ratio of logged-in users
-  daily_active_ratio: 0.15  # Daily active user rate
-  sessions_per_day_range: [1, 3]
-
-funnel:
-  browse_to_view_item: 0.70       # Base rates (adjusted per segment)
-  view_item_to_add_to_cart: 0.30
-  add_to_cart_to_remove: 0.10
-  add_to_cart_to_checkout: 0.60
-  checkout_to_purchase: 0.75
-  promotion_probability: 0.15
-
-# Day-of-week traffic multipliers (Mon=0 .. Sun=6)
-day_of_week_weights:
-  0: 0.90   # Monday
-  1: 0.95   # Tuesday
-  2: 1.00   # Wednesday
-  3: 1.00   # Thursday
-  4: 1.10   # Friday
-  5: 1.25   # Saturday
-  6: 1.20   # Sunday
-
-# Campaign periods: CPC/email traffic boosted during these windows
-campaigns:
-  - name: "new_year_sale"
-    start: "2025-01-01"
-    end: "2025-01-03"
-    cpc_multiplier: 2.5
-    email_multiplier: 1.8
-
-# Data quality noise settings
-noise:
-  null_user_id_rate: 0.05      # 5% of logged-in user events have null user_id
-  bot_session_rate: 0.02       # 2% of sessions are bot-like
-  payment_failure_rate: 0.08   # 8% of checkout attempts fail, then retry
-
-output:
-  directory: "./output"
-
-settings:
-  stream_id: "1234567890"
-  currency: "JPY"
-  seed: 42
-```
-
 ## File Structure
 
 | File | Description |
 |---|---|
-| `generate.py` | Main entry point |
+| `generate.py` | Main entry point; validates config on startup |
 | `user_journeys.py` | Session and event generation logic |
 | `product_catalog.py` | Product master and coupon definitions |
 | `tables.py` | CSV table generation (customers / products / orders / order_items) |
@@ -580,6 +665,6 @@ settings:
 | `config.yaml` | Generation parameter settings |
 | `bigquery_load.py` | BigQuery loader |
 | `schema_ga4_latest.json` | Latest GA4 BigQuery Export schema definition |
-| `migrate_schema.py` | Migration script to add new GA4 schema fields to existing data |
-| `fix_event_order.py` | Script to fix event ordering within sessions |
+| `migrate_schema.py` | Adds new GA4 schema fields to existing JSONL output (`--input-dir` / `--output-dir`) |
+| `fix_event_order.py` | Fixes event ordering within sessions (`--input-dir` / `--output-dir`) |
 | `sql/mart/v_events_flat.sql` | Event flattening view definition |

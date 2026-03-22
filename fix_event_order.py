@@ -168,11 +168,34 @@ def fix_file(input_path: str, output_path: str) -> dict:
 
 
 def main():
-    input_dir = "output"
-    output_dir = "output_fixed"
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Fix event ordering within sessions")
+    parser.add_argument("--input-dir", default="output", help="Input directory (default: output)")
+    parser.add_argument("--output-dir", default="output_fixed", help="Output directory (default: output_fixed)")
+    args = parser.parse_args()
+
+    input_dir = args.input_dir
+    output_dir = args.output_dir
+
+    if not os.path.isdir(input_dir):
+        print(f"Error: input directory not found: {input_dir}", file=__import__('sys').stderr)
+        raise SystemExit(1)
+
+    if os.path.abspath(input_dir) == os.path.abspath(output_dir):
+        print(
+            "Error: output directory must be different from input directory to prevent data loss.",
+            file=__import__('sys').stderr,
+        )
+        raise SystemExit(1)
+
     os.makedirs(output_dir, exist_ok=True)
 
     files = sorted(glob.glob(os.path.join(input_dir, "events_*.jsonl")))
+    if not files:
+        print(f"No events_*.jsonl files found in {input_dir}")
+        return
+
     total_fixed = 0
     total_sessions = 0
 
