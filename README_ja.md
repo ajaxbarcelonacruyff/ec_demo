@@ -72,6 +72,7 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 - **ベータ分布による購買傾向** — ユーザーの基本コンバージョン確率は固定レートではなく Beta(2,5) から引かれ、実際のストアで見られる低コンバージョンユーザーのロングテールを再現
 - **起動時の設定バリデーション** — `generate.py` は起動時に `config.yaml` を検証。ファイルパスの存在確認と数値の範囲チェックを行い、不正なデータをサイレントに生成する代わりに明確なエラーメッセージで即時終了
 - **EC 受注データと GA4 purchase の完全一致** — タイムスタンプ・金額・商品が完全に一致
+- **リアルなアイデンティティモデル** — マルチデバイス、共有デバイス、ログインゲート型 `user_id`、注文を保持した GA4 トラッキング欠損。詳細は [docs/IDENTITY_MODEL_ja.md](docs/IDENTITY_MODEL_ja.md) を参照。
 
 ---
 
@@ -652,19 +653,38 @@ GA4 BigQuery Export のネスト構造をフラット化し、セッション単
 
 ## ファイル構成
 
-| ファイル | 説明 |
-|---|---|
-| `generate.py` | メインエントリーポイント。起動時に設定をバリデーション |
-| `user_journeys.py` | セッション・イベント生成ロジック |
-| `product_catalog.py` | 商品マスタ・クーポン定義 |
-| `tables.py` | CSV テーブル生成（customers / products / orders / order_items） |
-| `ga4_schema.py` | GA4 BigQuery Export スキーマのビルダー |
-| `traffic_sources.py` | 流入元データ |
-| `device_geo.py` | デバイス・地理データ |
-| `utils.py` | ID 生成・タイムスタンプ変換ユーティリティ |
-| `config.yaml` | 生成パラメータ設定 |
-| `bigquery_load.py` | BigQuery ローダー |
-| `schema_ga4_latest.json` | 最新 GA4 BigQuery Export スキーマ定義 |
-| `migrate_schema.py` | 既存 JSONL 出力に新 GA4 スキーマフィールドを追加（`--input-dir` / `--output-dir`） |
-| `fix_event_order.py` | セッション内イベント順序の修正（`--input-dir` / `--output-dir`） |
-| `sql/mart/v_events_flat.sql` | イベントフラット化ビュー定義 |
+```
+ec_demo/
+├── generate.py                      # エントリーポイント（ラッパー）
+├── bigquery_load.py                 # BigQuery ローダー（ラッパー）
+├── config.yaml                      # 生成パラメータ設定
+├── requirements.txt
+├── README.md / README_ja.md
+│
+├── src/                             # Python ソースモジュール
+│   ├── generate.py                  # メイン生成ロジック
+│   ├── identity.py                  # Person-Device モデル、SessionIdentity
+│   ├── user_journeys.py             # セッション・イベントシミュレーション
+│   ├── product_catalog.py           # 商品マスタ・クーポン定義
+│   ├── tables.py                    # CSV テーブル生成
+│   ├── ga4_schema.py                # GA4 BigQuery Export スキーマビルダー
+│   ├── traffic_sources.py           # 流入元データ
+│   ├── device_geo.py                # デバイス・地理データ
+│   ├── utils.py                     # ID 生成・タイムスタンプユーティリティ
+│   ├── bigquery_load.py             # BigQuery ローダー実装
+│   ├── migrate_schema.py            # スキーマ移行ツール
+│   └── fix_event_order.py           # イベント順序修正ツール
+│
+├── tests/                           # ユニット・統合テスト (pytest)
+│   ├── test_identity.py             # アイデンティティモジュールテスト
+│   └── test_invariants.py           # 5つの不変条件 + ノイズ + 整合性
+│
+├── docs/                            # ドキュメント
+│   ├── IDENTITY_MODEL.md            # アイデンティティモデル仕様（英語）
+│   ├── IDENTITY_MODEL_ja.md         # アイデンティティモデル仕様（日本語）
+│   └── schema_ga4_latest.json       # GA4 スキーマリファレンス
+│
+└── sql/mart/                        # BigQuery ビュー
+    ├── v_events_flat.sql            # イベントフラット化ビュー
+    └── v_identity_resolution.sql    # アイデンティティ解決ビュー
+```

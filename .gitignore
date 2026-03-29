@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .venv/
 BigQuery.txt
+.coverage
+.pytest_cache/
+.ruff_cache/

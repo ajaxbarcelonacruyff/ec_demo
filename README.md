@@ -72,6 +72,7 @@ orders.order_id        <->  GA4 events.transaction_id (purchase events)
 - **Purchase propensity via Beta distribution** — Each user's baseline conversion probability is drawn from Beta(2,5) rather than a fixed rate, producing the long-tail of low-converting users seen in real stores
 - **Config validation on startup** — `generate.py` validates `config.yaml` at launch: checks file paths exist and that numeric values are within legal ranges, failing fast with a descriptive error rather than producing invalid data silently
 - **EC order to GA4 purchase consistency** — Timestamps, amounts, and items match exactly
+- **Realistic identity model** — Multi-device users, shared devices, login-gated `user_id`, and GA4 tracking loss with order preservation. See [docs/IDENTITY_MODEL.md](docs/IDENTITY_MODEL.md) for full specification.
 
 ---
 
@@ -652,19 +653,38 @@ A base view that flattens the nested GA4 BigQuery Export structure and enriches 
 
 ## File Structure
 
-| File | Description |
-|---|---|
-| `generate.py` | Main entry point; validates config on startup |
-| `user_journeys.py` | Session and event generation logic |
-| `product_catalog.py` | Product master and coupon definitions |
-| `tables.py` | CSV table generation (customers / products / orders / order_items) |
-| `ga4_schema.py` | GA4 BigQuery Export schema builder |
-| `traffic_sources.py` | Traffic source data |
-| `device_geo.py` | Device and geographic data |
-| `utils.py` | ID generation and timestamp utilities |
-| `config.yaml` | Generation parameter settings |
-| `bigquery_load.py` | BigQuery loader |
-| `schema_ga4_latest.json` | Latest GA4 BigQuery Export schema definition |
-| `migrate_schema.py` | Adds new GA4 schema fields to existing JSONL output (`--input-dir` / `--output-dir`) |
-| `fix_event_order.py` | Fixes event ordering within sessions (`--input-dir` / `--output-dir`) |
-| `sql/mart/v_events_flat.sql` | Event flattening view definition |
+```
+ec_demo/
+├── generate.py                      # Entry point (wrapper)
+├── bigquery_load.py                 # BigQuery loader (wrapper)
+├── config.yaml                      # Generation parameters
+├── requirements.txt
+├── README.md / README_ja.md
+│
+├── src/                             # Python source modules
+│   ├── generate.py                  # Main generation logic
+│   ├── identity.py                  # Person-Device model, SessionIdentity
+│   ├── user_journeys.py             # Session and event simulation
+│   ├── product_catalog.py           # Product master and coupons
+│   ├── tables.py                    # CSV table generation
+│   ├── ga4_schema.py                # GA4 BigQuery Export schema builder
+│   ├── traffic_sources.py           # Traffic source data
+│   ├── device_geo.py                # Device and geographic data
+│   ├── utils.py                     # ID generation, timestamp utilities
+│   ├── bigquery_load.py             # BigQuery loader implementation
+│   ├── migrate_schema.py            # Schema migration tool
+│   └── fix_event_order.py           # Event ordering fix tool
+│
+├── tests/                           # Unit and integration tests (pytest)
+│   ├── test_identity.py             # Identity module tests
+│   └── test_invariants.py           # 5 invariants + noise + consistency
+│
+├── docs/                            # Documentation
+│   ├── IDENTITY_MODEL.md            # Identity model spec (EN)
+│   ├── IDENTITY_MODEL_ja.md         # Identity model spec (JA)
+│   └── schema_ga4_latest.json       # GA4 schema reference
+│
+└── sql/mart/                        # BigQuery views
+    ├── v_events_flat.sql            # Event flattening view
+    └── v_identity_resolution.sql    # Identity resolution view
+```

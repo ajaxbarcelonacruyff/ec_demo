@@ -1,12 +1,25 @@
 date_range:
   start: "2025-01-01"
-  end: "2025-01-31"
+  end: "2025-03-31"
 
 users:
   total: 1000
   logged_in_ratio: 0.3
   daily_active_ratio: 0.15
   sessions_per_day_range: [1, 3]
+
+# Identity model: multi-device, shared device, login timing
+# See docs/IDENTITY_MODEL.md for full specification.
+# If this section is absent, backward-compatible defaults are used.
+identity:
+  multi_device_ratio: 0.25       # 25% of logged-in users own 2+ devices
+  max_devices_per_user: 3
+  shared_device_ratio: 0.05      # 5% of devices shared by 2+ persons
+  max_users_per_device: 3
+  early_login_rate: 0.60         # Login during initial browse
+  late_login_rate: 0.25          # Login at cart/checkout
+  # no_login_rate is implicit: 1 - early - late = 0.15
+  mid_session_logout_rate: 0.05  # Logout after purchase
 
 funnel:
   # Base funnel rates (adjusted per segment at runtime)
@@ -44,10 +57,26 @@ campaigns:
     end: "2025-01-31"
     cpc_multiplier: 1.8
     email_multiplier: 2.0
+  - name: "valentines_day"
+    start: "2025-02-10"
+    end: "2025-02-14"
+    cpc_multiplier: 2.2
+    email_multiplier: 1.6
+  - name: "spring_sale"
+    start: "2025-03-01"
+    end: "2025-03-05"
+    cpc_multiplier: 2.0
+    email_multiplier: 1.8
+  - name: "end_of_quarter"
+    start: "2025-03-25"
+    end: "2025-03-31"
+    cpc_multiplier: 1.5
+    email_multiplier: 2.0
 
 # Data quality noise settings
 noise:
-  null_user_id_rate: 0.05      # 5% of logged-in user events have null user_id
+  null_user_id_rate: 0.05      # 5% of logged-in sessions: GA4 tracking lost, orders still recorded
+  ga4_event_loss_rate: 0.03    # 3% of individual GA4 events randomly dropped (except session_start)
   bot_session_rate: 0.02       # 2% of sessions are bot-like (rapid, no engagement)
   payment_failure_rate: 0.08   # 8% of checkout attempts fail, then retry
 
