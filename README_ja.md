@@ -21,7 +21,7 @@ GA4 の BigQuery エクスポート形式は、深くネストされた構造を
 
 ec_demo は、実際の行動パターンに基づいた合成 EC イベントを生成します。パレート分布に従う商品人気度、ユーザーセグメント別のコンバージョン率、流入元とランディングページの相関、決済失敗とリトライシーケンス、コインフリップではなくベータ分布から引いた購買傾向、などがその例です。リレーショナルテーブル（customers、products、orders、order_items）は共通キーで GA4 イベントと結合できるため、データを加工せずにクロスデータセットクエリをテストできます。
 
-出力は GA4 BigQuery Export 形式の JSONL ファイルです。本番データが使えない開発・テスト・デモ環境向けに設計されています。
+出力は GA4 BigQuery Export 形式の JSONL ファイルで、付属の `bigquery_load.py` スクリプトで読み込めます。本番データが使えない開発・テスト・デモ環境向けに設計されています。
 
 ---
 
@@ -118,6 +118,109 @@ output/
 ├── orders.csv
 └── order_items.csv
 ```
+
+### 3. BigQuery へのロード
+
+#### 必要なもの
+
+| 項目 | 説明 | 例 |
+|---|---|---|
+| GCP プロジェクト ID | BigQuery を利用するプロジェクト | `my-project-123` |
+| データセット名 | 作成するデータセット（存在しない場合は自動作成） | `ec_demo` |
+| ロケーション | データセットのリージョン | `asia-northeast1`（東京）/ `US` / `EU` |
+| 認証 | 下記のいずれか | - |
+
+#### 認証の設定
+
+**方法 A: gcloud CLI（ローカル実行推奨）**
+
+```bash
+# gcloud CLI のインストールがまだの場合
+# https://cloud.google.com/sdk/docs/install
+
+gcloud auth application-default login
+```
+
+**方法 B: サービスアカウントキー**
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+```
+
+サービスアカウントに必要な IAM ロール：
+- `BigQuery Data Editor`（データセット・テーブルの作成・書き込み）
+- `BigQuery Job User`（ロードジョブの実行）
+
+#### ロード実行
+
+```bash
+python bigquery_load.py \
+  --project YOUR_PROJECT_ID \
+  --dataset ec_demo \
+  --location asia-northeast1
+```
+
+サービスアカウントキーを明示する場合：
+
+```bash
+python bigquery_load.py \
+  --project YOUR_PROJECT_ID \
+  --dataset ec_demo \
+  --location asia-northeast1 \
+  --key-file /path/to/service-account-key.json
+```
+
+| オプション | デフォルト | 説明 |
+|---|---|---|
+| `--project` | （必須） | GCP プロジェクト ID |
+| `--dataset` | （必須） | BigQuery データセット名 |
+| `--location` | `asia-northeast1` | データセットのロケーション |
+| `--output-dir` | `./output` | 生成ファイルのディレクトリ |
+| `--key-file` | なし（ADC 使用） | サービスアカウントキーのパス |
+
+#### ロード後のテーブル構成
+
+GA4 events は実際の GA4 BigQuery Export と同じ日付シャーディング形式で作成されます。
+
+```
+{dataset}/
+├── events_20250101     # GA4 events（日別テーブル）
+├── events_20250102
+├── ...
+├── customers
+├── products
+├── orders
+└── order_items
+```
+
+### 4. データマートビューの作成
+
+BigQuery にテーブルをロードした後、データマートビューを作成します。
+
+```bash
+# PROJECT_ID.DATASET を実際の値に置換して実行
+sed 's/PROJECT_ID\.DATASET/YOUR_PROJECT_ID.ec_demo/g' sql/mart/v_events_flat.sql \
+  | bq query --use_legacy_sql=false
+```
+
+または BigQuery コンソールで `sql/mart/v_events_flat.sql` の内容を貼り付け、`PROJECT_ID.DATASET` を手動で置換して実行してください。
+
+#### ビュー作成後のデータセット構成
+
+```
+{dataset}/
+├── events_20250101     # GA4 events（日別テーブル）
+├── events_20250102
+├── ...
+├── customers
+├── products
+├── orders
+├── order_items
+└── v_events_flat       # イベントフラット化ビュー
+```
+
+BigQuery コンソールで確認：
+`https://console.cloud.google.com/bigquery?project=YOUR_PROJECT_ID`
 
 ---
 
@@ -502,6 +605,7 @@ session_traffic_source_last_click
 ```
 ec_demo/
 ├── generate.py                      # エントリーポイント（ラッパー）
+├── bigquery_load.py                 # BigQuery ローダー（ラッパー）
 ├── config.yaml                      # 生成パラメータ設定
 ├── requirements.txt
 ├── README.md / README_ja.md
@@ -515,13 +619,15 @@ ec_demo/
 │   ├── ga4_schema.py                # GA4 BigQuery Export スキーマビルダー
 │   ├── traffic_sources.py           # 流入元データ
 │   ├── device_geo.py                # デバイス・地理データ
-│   └── utils.py                     # ID 生成・タイムスタンプユーティリティ
+│   ├── utils.py                     # ID 生成・タイムスタンプユーティリティ
+│   └── bigquery_load.py             # BigQuery ローダー実装
 │
 ├── tests/                           # ユニット・統合テスト (pytest)
 │   ├── test_identity.py             # アイデンティティモジュールテスト
 │   └── test_invariants.py           # 5つの不変条件 + ノイズ + 整合性
 │
-└── docs/                            # ドキュメント
-    ├── IDENTITY_MODEL.md            # アイデンティティモデル仕様（英語）
-    └── IDENTITY_MODEL_ja.md         # アイデンティティモデル仕様（日本語）
+├── docs/                            # ドキュメント
+│   ├── IDENTITY_MODEL.md            # アイデンティティモデル仕様（英語）
+│   ├── IDENTITY_MODEL_ja.md         # アイデンティティモデル仕様（日本語）
+│   └── schema_ga4_latest.json       # GA4 スキーマリファレンス
 ```

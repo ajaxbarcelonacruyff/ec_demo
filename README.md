@@ -21,7 +21,7 @@ GA4's BigQuery export format is deeply nested and statistically structured. Most
 
 ec_demo generates synthetic ecommerce events with real behavioral patterns: Pareto-distributed product popularity, user-segment-specific conversion rates, correlated traffic source and landing page assignments, payment failures with retry sequences, and purchase propensity drawn from a Beta distribution rather than a coin flip. The relational tables (customers, products, orders, order_items) join cleanly to the GA4 events via shared keys, so you can test cross-dataset queries without massaging the data first.
 
-The output is JSONL in GA4 BigQuery Export format. It is designed for development, testing, and demo environments where production data is not available.
+The output is JSONL in GA4 BigQuery Export format, loadable with the included `bigquery_load.py` script. It is designed for development, testing, and demo environments where production data is not available.
 
 ---
 
@@ -118,6 +118,83 @@ output/
 ├── orders.csv
 └── order_items.csv
 ```
+
+### 3. Load into BigQuery
+
+#### Prerequisites
+
+| Item | Description | Example |
+|---|---|---|
+| GCP Project ID | Project with BigQuery enabled | `my-project-123` |
+| Dataset name | Dataset to create (auto-created if missing) | `ec_demo` |
+| Location | Dataset region | `asia-northeast1` (Tokyo) / `US` / `EU` |
+| Authentication | One of the methods below | - |
+
+#### Authentication
+
+**Option A: gcloud CLI (recommended for local use)**
+
+```bash
+# Install gcloud CLI if not already installed
+# https://cloud.google.com/sdk/docs/install
+
+gcloud auth application-default login
+```
+
+**Option B: Service account key**
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+```
+
+Required IAM roles for the service account:
+- `BigQuery Data Editor` (create/write datasets and tables)
+- `BigQuery Job User` (run load jobs)
+
+#### Run the Loader
+
+```bash
+python bigquery_load.py \
+  --project YOUR_PROJECT_ID \
+  --dataset ec_demo \
+  --location asia-northeast1
+```
+
+With an explicit service account key:
+
+```bash
+python bigquery_load.py \
+  --project YOUR_PROJECT_ID \
+  --dataset ec_demo \
+  --location asia-northeast1 \
+  --key-file /path/to/service-account-key.json
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--project` | (required) | GCP project ID |
+| `--dataset` | (required) | BigQuery dataset name |
+| `--location` | `asia-northeast1` | Dataset location |
+| `--output-dir` | `./output` | Directory containing generated files |
+| `--key-file` | None (uses ADC) | Path to service account key JSON |
+
+#### Table Layout After Loading
+
+GA4 events are created as date-sharded tables, matching the real GA4 BigQuery Export format.
+
+```
+{dataset}/
+├── events_20250101     # GA4 events (daily tables)
+├── events_20250102
+├── ...
+├── customers
+├── products
+├── orders
+└── order_items
+```
+
+Verify in the BigQuery console:
+`https://console.cloud.google.com/bigquery?project=YOUR_PROJECT_ID`
 
 ---
 
@@ -502,6 +579,7 @@ session_traffic_source_last_click
 ```
 ec_demo/
 ├── generate.py                      # Entry point (wrapper)
+├── bigquery_load.py                 # BigQuery loader (wrapper)
 ├── config.yaml                      # Generation parameters
 ├── requirements.txt
 ├── README.md / README_ja.md
@@ -516,12 +594,14 @@ ec_demo/
 │   ├── traffic_sources.py           # Traffic source data
 │   ├── device_geo.py                # Device and geographic data
 │   ├── utils.py                     # ID generation, timestamp utilities
+│   └── bigquery_load.py             # BigQuery loader implementation
 │
 ├── tests/                           # Unit and integration tests (pytest)
 │   ├── test_identity.py             # Identity module tests
 │   └── test_invariants.py           # 5 invariants + noise + consistency
 │
-└── docs/                            # Documentation
-    ├── IDENTITY_MODEL.md            # Identity model spec (EN)
-    └── IDENTITY_MODEL_ja.md         # Identity model spec (JA)
+├── docs/                            # Documentation
+│   ├── IDENTITY_MODEL.md            # Identity model spec (EN)
+│   ├── IDENTITY_MODEL_ja.md         # Identity model spec (JA)
+│   └── schema_ga4_latest.json       # GA4 schema reference
 ```
