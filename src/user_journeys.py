@@ -8,6 +8,12 @@ Improvements over v1:
 - Landing page ↔ traffic source correlation
 - Data quality noise (null user_id, bot sessions, payment failures)
 - Fixed event ordering (login after first page_view)
+
+v2 identity model:
+- Person-Device many-to-many (multi-device, shared devices)
+- SessionIdentity state machine (login/logout gated user_id)
+- Noise sessions: GA4 events anonymous, orders still recorded
+- Late login: login just before ecommerce events
 """
 
 import random
@@ -29,6 +35,10 @@ from traffic_sources import (
 )
 from device_geo import pick_device, pick_geo, build_device_record, build_geo_record
 from ga4_schema import ep, up, build_event
+from identity import (
+    SessionIdentity, create_persons_and_devices, pick_session_device,
+    get_identity_config, build_purchase_info,
+)
 
 
 HOSTNAME = "www.example-ec.jp"
@@ -71,8 +81,6 @@ PAYMENT_WEIGHTS = [50, 15, 20, 10, 5]
 
 LOGIN_METHODS   = ["email", "google", "line", "yahoo"]
 LOGIN_WEIGHTS   = [50, 30, 15, 5]
-
-TAX_RATE = 0.10
 
 # Landing pages by traffic source type
 _SOURCE_LANDING_PAGES = {
@@ -168,38 +176,25 @@ def _pick_landing_for_source(src: dict) -> dict:
     return SITE_PAGES[0]  # fallback to home
 
 
-def create_user_pool(
-    total_users: int,
-    logged_in_ratio: float,
-    sim_start: "date | None" = None,
-) -> list[dict]:
-    """Create a pool of simulated users with category affinity."""
+def create_user_pool(total_users, logged_in_ratio, sim_start=None):
+    """DEPRECATED: Use identity.create_persons_and_devices instead."""
     from datetime import date as _date
     if sim_start is None:
         sim_start = _date.today()
-
-    users = []
-    for _ in range(total_users):
-        user_id = generate_user_id() if random.random() < logged_in_ratio else None
-
-        # Category affinity: each user has 1-3 preferred categories
-        n_affinity = random.choices([1, 2, 3], weights=[40, 40, 20], k=1)[0]
-        affinity = random.sample(CATEGORIES, min(n_affinity, len(CATEGORIES)))
-
-        user = {
-            "user_pseudo_id":      generate_user_pseudo_id(),
-            "user_id":             user_id,
-            "device_profile":      pick_device(),
-            "geo_profile":         pick_geo(),
-            "first_touch_source":  pick_traffic_source(),
-            "session_count":       0,
-            "purchase_propensity": random.betavariate(2, 5),
-            "affinity_categories": affinity,
-        }
-        if user_id:
-            user.update(generate_customer_attrs(user_id, sim_start))
-        users.append(user)
-    return users
+    persons, devices_index = create_persons_and_devices(
+        total_users, logged_in_ratio, sim_start=sim_start, identity_cfg={},
+    )
+    # Flatten to legacy format for backward compat
+    legacy = []
+    for p in persons:
+        dev = devices_index[p["device_ids"][0]]
+        u = dict(p)
+        u["user_pseudo_id"] = dev["user_pseudo_id"]
+        u["device_profile"] = dev["device_profile"]
+        u["geo_profile"] = dev["geo_profile"]
+        u["first_touch_source"] = dev["first_touch_source"]
+        legacy.append(u)
+    return legacy
 
 
 def _page_url(path: str, query: str = None) -> str:
@@ -215,13 +210,13 @@ def _strip_list_fields(items: list[dict]) -> list[dict]:
     return [{k: v for k, v in item.items() if k not in remove} for item in items]
 
 
-def generate_bot_session(user: dict, session_date: datetime, config: dict) -> list[dict]:
+def generate_bot_session(person: dict, device: dict, session_date: datetime, config: dict) -> list[dict]:
     """Generate a bot-like session: rapid page views, no engagement."""
     session_id = generate_ga_session_id()
     stream_id = config.get("stream_id", "1234567890")
-    device_record = build_device_record(user["device_profile"])
-    geo_record = build_geo_record(user["geo_profile"])
-    traffic_src_record = build_traffic_source_record(user["first_touch_source"])
+    device_record = build_device_record(device["device_profile"])
+    geo_record = build_geo_record(device["geo_profile"])
+    traffic_src_record = build_traffic_source_record(device["first_touch_source"])
 
     current_time = session_date + random_time_of_day()
     events = []
@@ -238,7 +233,7 @@ def generate_bot_session(user: dict, session_date: datetime, config: dict) -> li
     ]
     events.append(build_event(
         event_name="session_start", event_timestamp=ts, event_date=date_str,
-        user_pseudo_id=user["user_pseudo_id"], event_params=params,
+        user_pseudo_id=device["user_pseudo_id"], event_params=params,
         user_properties=[], device=device_record, geo=geo_record,
         traffic_source=traffic_src_record, stream_id=stream_id,
         batch_page_id=0, batch_ordering_id=0, batch_event_index=0,
@@ -259,7 +254,7 @@ def generate_bot_session(user: dict, session_date: datetime, config: dict) -> li
         ]
         events.append(build_event(
             event_name="page_view", event_timestamp=ts, event_date=date_str,
-            user_pseudo_id=user["user_pseudo_id"], event_params=params,
+            user_pseudo_id=device["user_pseudo_id"], event_params=params,
             user_properties=[], device=device_record, geo=geo_record,
             traffic_source=traffic_src_record, stream_id=stream_id,
             batch_page_id=i + 1, batch_ordering_id=i + 1, batch_event_index=0,
@@ -310,49 +305,78 @@ def generate_refund_event(refund_info: dict, refund_date: datetime, stream_id: s
 
 
 def generate_session_events(
-    user: dict,
+    person: dict,
+    device: dict,
     session_date: datetime,
     config: dict,
 ) -> tuple[list[dict], dict | None]:
     """Generate all events for one session.
+
+    Uses the SessionIdentity state machine to control user_id on events.
+    Login/logout events gate when user_id appears. Noise sessions emit
+    only anonymous browsing in GA4 but still record orders.
 
     Returns:
         (events, purchase_info)
         purchase_info is a dict with data needed to generate a future refund,
         or None if no purchase occurred.
     """
+    identity_cfg = config.get("identity", {})
     noise_cfg = config.get("noise", {})
+    sid = SessionIdentity(person_user_id=person["user_id"])
 
-    is_first_session = (user["session_count"] == 0)
-    user["session_count"] += 1
+    # Noise: session-level GA4 tracking loss
+    is_noise_session = (
+        person["user_id"] is not None
+        and random.random() < noise_cfg.get("null_user_id_rate", 0.0)
+    )
+
+    # Login timing (only for non-noise sessions with accounts)
+    login_timing = None
+    if person["user_id"] is not None and not is_noise_session:
+        early_rate = identity_cfg.get("early_login_rate", 0.55)
+        late_rate = identity_cfg.get("late_login_rate", 0.0)
+        no_login_rate = max(0.0, 1.0 - early_rate - late_rate)
+        login_timing = random.choices(
+            ["early", "late", None],
+            weights=[early_rate, late_rate, no_login_rate],
+            k=1,
+        )[0]
+
+    # Can this session generate an order?
+    can_generate_order = False
+    if is_noise_session and person["user_id"] is not None:
+        can_generate_order = True
+    elif login_timing in ("early", "late"):
+        can_generate_order = True
+
+    is_first_session = (person["session_count"] == 0)
+    # NOTE: Intentional in-place mutation. session_count must persist across
+    # sessions/days within a single-threaded generation run.
+    person["session_count"] += 1
 
     session_id     = generate_ga_session_id()
-    session_number = user["session_count"]
+    session_number = person["session_count"]
 
     # Campaign-aware traffic source
     session_src = pick_traffic_source(
         active_campaigns=config.get("active_campaigns", []),
     )
 
-    device_record       = build_device_record(user["device_profile"])
-    geo_record          = build_geo_record(user["geo_profile"])
-    traffic_src_record  = build_traffic_source_record(user["first_touch_source"])
+    device_record       = build_device_record(device["device_profile"])
+    geo_record          = build_geo_record(device["geo_profile"])
+    traffic_src_record  = build_traffic_source_record(device["first_touch_source"])
     collected_ts        = build_collected_traffic_source(session_src)
     stslc               = build_session_traffic_source_last_click(session_src)
 
     # Segment-based funnel adjustment
     segment = _get_user_segment(session_number)
-    device_category = user["device_profile"]["category"]
+    device_category = device["device_profile"]["category"]
     base_funnel = config.get("funnel", {})
     funnel = _get_adjusted_funnel(base_funnel, segment, device_category)
 
     month = session_date.month
-    affinity = user.get("affinity_categories", [])
-
-    # Determine effective user_id (apply noise: sometimes null for logged-in users)
-    effective_user_id = user["user_id"]
-    if effective_user_id and random.random() < noise_cfg.get("null_user_id_rate", 0.0):
-        effective_user_id = None  # simulate tracking gap
+    affinity = person.get("affinity_categories", [])
 
     # Batch tracking
     batch_state = {"page_id": 0, "ordering_id": 0, "event_index": 0}
@@ -391,7 +415,7 @@ def generate_session_events(
         ]
 
     def _user_props():
-        return [up("user_id", string_value=effective_user_id)] if effective_user_id else []
+        return [up("user_id", string_value=sid.current_user_id)] if sid.current_user_id else []
 
     def _ev(name, extra=None, items=None, ecommerce=None, is_page_view=False):
         if is_page_view:
@@ -400,7 +424,7 @@ def generate_session_events(
             event_name=name,
             event_timestamp=_ts(),
             event_date=_date(),
-            user_pseudo_id=user["user_pseudo_id"],
+            user_pseudo_id=device["user_pseudo_id"],
             event_params=_base() + (extra or []),
             user_properties=_user_props(),
             device=device_record,
@@ -408,7 +432,7 @@ def generate_session_events(
             traffic_source=traffic_src_record,
             collected_traffic_source=collected_ts,
             stream_id=stream_id,
-            user_id=effective_user_id,
+            user_id=sid.current_user_id,
             user_first_touch_timestamp=first_touch_ts,
             items=items,
             ecommerce=ecommerce,
@@ -446,15 +470,13 @@ def generate_session_events(
     ], is_page_view=True))
     _advance(5, 30)
 
-    # 4. sign_up / login (AFTER landing page_view)
-    if user["user_id"]:
+    # 4. EARLY LOGIN (after landing page_view)
+    if login_timing == "early":
         method = random.choices(LOGIN_METHODS, LOGIN_WEIGHTS, k=1)[0]
-        if is_first_session and random.random() < 0.70:
-            events.append(_ev("sign_up", [ep("method", string_value=method)]))
-            _advance(10, 60)
-        elif not is_first_session and random.random() < 0.55:
-            events.append(_ev("login", [ep("method", string_value=method)]))
-            _advance(5, 20)
+        event_name = "sign_up" if is_first_session else "login"
+        sid.login()
+        events.append(_ev(event_name, [ep("method", string_value=method)]))
+        _advance(5, 20)
 
     prev_url     = landing_url
     browsed_list = []
@@ -515,7 +537,7 @@ def generate_session_events(
             browsed_list = list_items
             active_page  = page
 
-    # 7. view_promotion → select_promotion (optional)
+    # 7. view_promotion -> select_promotion (optional)
     promo = None
     if random.random() < funnel.get("promotion_probability", 0.15):
         promo       = pick_promotion(month=month)
@@ -544,8 +566,8 @@ def generate_session_events(
             events.append(_ev("select_promotion", promo_params, items=promo_items))
             _advance(5, 20)
 
-    # 8. select_item → view_item (and deeper funnel)
-    if random.random() < funnel.get("browse_to_view_item", 0.70):
+    # 8. select_item -> ecommerce funnel (gated by can_generate_order)
+    if can_generate_order and random.random() < funnel.get("browse_to_view_item", 0.70):
 
         if browsed_list and active_page:
             clicked = random.choice(browsed_list[:min(8, len(browsed_list))])
@@ -582,175 +604,206 @@ def generate_session_events(
             _advance(30, 180)
             prev_url = product_url
 
+        # LATE LOGIN: login just before ecommerce
+        if login_timing == "late" and not sid.is_logged_in:
+            method = random.choices(LOGIN_METHODS, LOGIN_WEIGHTS, k=1)[0]
+            event_name = "sign_up" if is_first_session else "login"
+            sid.login()
+            events.append(_ev(event_name, [ep("method", string_value=method)]))
+            _advance(2, 10)
+
         # 9. add_to_cart
-        add_prob = funnel.get("view_item_to_add_to_cart", 0.30) + user["purchase_propensity"] * 0.2
+        add_prob = funnel.get("view_item_to_add_to_cart", 0.30) + person["purchase_propensity"] * 0.2
         if random.random() < add_prob:
             added = _strip_list_fields(detail_items[:random.randint(1, len(detail_items))])
 
-            for it in added:
-                events.append(_ev("add_to_cart", [
-                    ep("currency", string_value=currency),
-                    ep("value",    float_value=it["price"] * it["quantity"]),
-                ], items=[it]))
-                _advance(5, 30)
+            if not is_noise_session:
+                for it in added:
+                    events.append(_ev("add_to_cart", [
+                        ep("currency", string_value=currency),
+                        ep("value",    float_value=it["price"] * it["quantity"]),
+                    ], items=[it]))
+                    _advance(5, 30)
 
             # 10. remove_from_cart (optional, only if more than one item)
             if len(added) > 1 and random.random() < funnel.get("add_to_cart_to_remove", 0.10):
                 removed = added.pop()
-                events.append(_ev("remove_from_cart", [
-                    ep("currency", string_value=currency),
-                    ep("value",    float_value=removed["price"] * removed["quantity"]),
-                ], items=[removed]))
-                _advance(5, 20)
+
+                if not is_noise_session:
+                    events.append(_ev("remove_from_cart", [
+                        ep("currency", string_value=currency),
+                        ep("value",    float_value=removed["price"] * removed["quantity"]),
+                    ], items=[removed]))
+                    _advance(5, 20)
 
             cart_subtotal = sum(i["price"] * i["quantity"] for i in added)
 
             # 11. view_cart
-            cart_url = _page_url("/cart")
-            events.append(_ev("page_view", [
-                ep("page_location", string_value=cart_url),
-                ep("page_title",    string_value="カート | Example EC"),
-                ep("page_referrer", string_value=prev_url),
-            ], is_page_view=True))
-            _advance(2, 5)
-            events.append(_ev("view_cart", [
-                ep("currency", string_value=currency),
-                ep("value",    float_value=cart_subtotal),
-            ], items=added))
-            _advance(30, 120)
-            prev_url = cart_url
+            if not is_noise_session:
+                cart_url = _page_url("/cart")
+                events.append(_ev("page_view", [
+                    ep("page_location", string_value=cart_url),
+                    ep("page_title",    string_value="カート | Example EC"),
+                    ep("page_referrer", string_value=prev_url),
+                ], is_page_view=True))
+                _advance(2, 5)
+                events.append(_ev("view_cart", [
+                    ep("currency", string_value=currency),
+                    ep("value",    float_value=cart_subtotal),
+                ], items=added))
+                _advance(30, 120)
+                prev_url = cart_url
 
             # 12. begin_checkout
             if random.random() < funnel.get("add_to_cart_to_checkout", 0.60):
                 order_coupon  = random.choice(COUPONS)
-                checkout_url  = _page_url("/checkout")
 
-                events.append(_ev("page_view", [
-                    ep("page_location", string_value=checkout_url),
-                    ep("page_title",    string_value="チェックアウト | Example EC"),
-                    ep("page_referrer", string_value=prev_url),
-                ], is_page_view=True))
-                _advance(2, 5)
+                if not is_noise_session:
+                    checkout_url  = _page_url("/checkout")
 
-                checkout_params = [
-                    ep("currency", string_value=currency),
-                    ep("value",    float_value=cart_subtotal),
-                ]
-                if order_coupon:
-                    checkout_params.append(ep("coupon", string_value=order_coupon))
-                events.append(_ev("begin_checkout", checkout_params, items=added))
-                _advance(30, 120)
-
-                # 13. Payment failure → retry (noise)
-                payment_failed = random.random() < noise_cfg.get("payment_failure_rate", 0.0)
-                if payment_failed:
-                    # Emit a page_view to error page, then return to checkout
-                    error_url = _page_url("/checkout/error")
-                    events.append(_ev("page_view", [
-                        ep("page_location", string_value=error_url),
-                        ep("page_title",    string_value="決済エラー | Example EC"),
-                        ep("page_referrer", string_value=checkout_url),
-                    ], is_page_view=True))
-                    _advance(10, 60)
-
-                    # Some users abandon after error (40%)
-                    if random.random() < 0.40:
-                        # Add engagement_time_msec to all events and return
-                        for ev in events:
-                            ev["event_params"].append(
-                                ep("engagement_time_msec", int_value=random.randint(500, 30000))
-                            )
-                        return events, None
-
-                    # Retry: back to checkout
                     events.append(_ev("page_view", [
                         ep("page_location", string_value=checkout_url),
                         ep("page_title",    string_value="チェックアウト | Example EC"),
-                        ep("page_referrer", string_value=error_url),
+                        ep("page_referrer", string_value=prev_url),
                     ], is_page_view=True))
-                    _advance(10, 30)
+                    _advance(2, 5)
+
+                    checkout_params = [
+                        ep("currency", string_value=currency),
+                        ep("value",    float_value=cart_subtotal),
+                    ]
+                    if order_coupon:
+                        checkout_params.append(ep("coupon", string_value=order_coupon))
                     events.append(_ev("begin_checkout", checkout_params, items=added))
-                    _advance(30, 90)
+                    _advance(30, 120)
+
+                    # 13. Payment failure -> retry (noise)
+                    payment_failed = random.random() < noise_cfg.get("payment_failure_rate", 0.0)
+                    if payment_failed:
+                        # Emit a page_view to error page, then return to checkout
+                        error_url = _page_url("/checkout/error")
+                        events.append(_ev("page_view", [
+                            ep("page_location", string_value=error_url),
+                            ep("page_title",    string_value="決済エラー | Example EC"),
+                            ep("page_referrer", string_value=checkout_url),
+                        ], is_page_view=True))
+                        _advance(10, 60)
+
+                        # Some users abandon after error (40%)
+                        if random.random() < 0.40:
+                            # Add engagement_time_msec to all events and return
+                            for ev in events:
+                                ev["event_params"].append(
+                                    ep("engagement_time_msec", int_value=random.randint(500, 30000))
+                                )
+                            return events, None
+
+                        # Retry: back to checkout
+                        events.append(_ev("page_view", [
+                            ep("page_location", string_value=checkout_url),
+                            ep("page_title",    string_value="チェックアウト | Example EC"),
+                            ep("page_referrer", string_value=error_url),
+                        ], is_page_view=True))
+                        _advance(10, 30)
+                        events.append(_ev("begin_checkout", checkout_params, items=added))
+                        _advance(30, 90)
 
                 # 14. add_shipping_info
                 if random.random() < funnel.get("checkout_to_purchase", 0.75):
                     ship_opt    = random.choice(SHIPPING_OPTIONS)
                     ship_fee    = 0.0 if cart_subtotal >= FREE_SHIPPING_THRESHOLD else float(ship_opt["fee"])
-                    ship_params = [
-                        ep("currency",      string_value=currency),
-                        ep("value",         float_value=cart_subtotal),
-                        ep("shipping_tier", string_value=ship_opt["tier"]),
-                        ep("shipping",      float_value=ship_fee),
-                    ]
-                    if order_coupon:
-                        ship_params.append(ep("coupon", string_value=order_coupon))
-                    events.append(_ev("add_shipping_info", ship_params, items=added))
-                    _advance(30, 120)
+                    payment_type = random.choices(PAYMENT_TYPES, PAYMENT_WEIGHTS, k=1)[0]
 
-                    # 15. add_payment_info
-                    payment_type   = random.choices(PAYMENT_TYPES, PAYMENT_WEIGHTS, k=1)[0]
-                    payment_params = [
-                        ep("currency",     string_value=currency),
-                        ep("value",        float_value=cart_subtotal),
-                        ep("payment_type", string_value=payment_type),
-                    ]
-                    if order_coupon:
-                        payment_params.append(ep("coupon", string_value=order_coupon))
-                    events.append(_ev("add_payment_info", payment_params, items=added))
-                    _advance(30, 120)
+                    if not is_noise_session:
+                        ship_params = [
+                            ep("currency",      string_value=currency),
+                            ep("value",         float_value=cart_subtotal),
+                            ep("shipping_tier", string_value=ship_opt["tier"]),
+                            ep("shipping",      float_value=ship_fee),
+                        ]
+                        if order_coupon:
+                            ship_params.append(ep("coupon", string_value=order_coupon))
+                        events.append(_ev("add_shipping_info", ship_params, items=added))
+                        _advance(30, 120)
 
-                    # 16. purchase
-                    txn_id         = generate_transaction_id()
+                        # 15. add_payment_info
+                        payment_params = [
+                            ep("currency",     string_value=currency),
+                            ep("value",        float_value=cart_subtotal),
+                            ep("payment_type", string_value=payment_type),
+                        ]
+                        if order_coupon:
+                            payment_params.append(ep("coupon", string_value=order_coupon))
+                        events.append(_ev("add_payment_info", payment_params, items=added))
+                        _advance(30, 120)
+
+                    # 16. purchase — build purchase_info FIRST (single source of truth)
                     discount_total = apply_coupon(cart_subtotal, order_coupon) if order_coupon else 0.0
-                    revenue        = cart_subtotal - discount_total + ship_fee
-                    tax            = round(revenue * TAX_RATE)
 
-                    purchase_params = [
-                        ep("currency",       string_value=currency),
-                        ep("value",          float_value=revenue),
-                        ep("transaction_id", string_value=txn_id),
-                        ep("shipping",       float_value=ship_fee),
-                        ep("tax",            float_value=float(tax)),
-                    ]
-                    if order_coupon:
-                        purchase_params.append(ep("coupon", string_value=order_coupon))
-                    if promo:
-                        purchase_params.append(ep("promotion_id",   string_value=promo["promotion_id"]))
-                        purchase_params.append(ep("promotion_name", string_value=promo["promotion_name"]))
+                    purchase_info = build_purchase_info(
+                        person=person,
+                        device=device,
+                        cart_items=added,
+                        cart_subtotal=cart_subtotal,
+                        order_coupon=order_coupon,
+                        discount_total=discount_total,
+                        ship_fee=ship_fee,
+                        shipping_tier=ship_opt["tier"],
+                        payment_type=payment_type,
+                        currency=currency,
+                        purchase_datetime=current_time,
+                        session_id=session_id,
+                        session_number=session_number,
+                    )
 
-                    ecommerce = {
-                        "transaction_id":     txn_id,
-                        "purchase_revenue":   revenue,
-                        "total_item_quantity":sum(i["quantity"] for i in added),
-                        "unique_items":       len(added),
-                        "shipping_value":     ship_fee,
-                        "tax_value":          float(tax),
-                    }
-                    purchase_datetime = current_time  # capture before _advance
-                    events.append(_ev("purchase", purchase_params, items=added, ecommerce=ecommerce))
-                    _advance(5, 30)
+                    if not is_noise_session:
+                        # Derive GA4 event params FROM purchase_info
+                        txn_id  = purchase_info["transaction_id"]
+                        revenue = purchase_info["total_amount"]
+                        tax     = purchase_info["tax_amount"]
 
-                    purchase_info = {
-                        "user_pseudo_id":  user["user_pseudo_id"],
-                        "user_id":         user["user_id"],  # always use real user_id for orders
-                        "transaction_id":  txn_id,
-                        "order_datetime":  purchase_datetime,
-                        "subtotal":        cart_subtotal,
-                        "coupon_code":     order_coupon,
-                        "discount_amount": discount_total,
-                        "shipping_fee":    ship_fee,
-                        "shipping_tier":   ship_opt["tier"],
-                        "tax_amount":      float(tax),
-                        "total_amount":    revenue,
-                        "payment_type":    payment_type,
-                        "currency":        currency,
-                        "items":           added,
-                        "session_id":      session_id,
-                        "session_number":  session_number,
-                        "device":          device_record,
-                        "geo":             geo_record,
-                        "traffic_source":  traffic_src_record,
-                    }
+                        purchase_params = [
+                            ep("currency",       string_value=currency),
+                            ep("value",          float_value=revenue),
+                            ep("transaction_id", string_value=txn_id),
+                            ep("shipping",       float_value=ship_fee),
+                            ep("tax",            float_value=float(tax)),
+                        ]
+                        if order_coupon:
+                            purchase_params.append(ep("coupon", string_value=order_coupon))
+                        if promo:
+                            purchase_params.append(ep("promotion_id",   string_value=promo["promotion_id"]))
+                            purchase_params.append(ep("promotion_name", string_value=promo["promotion_name"]))
+
+                        ecommerce = {
+                            "transaction_id":     txn_id,
+                            "purchase_revenue":   revenue,
+                            "total_item_quantity":sum(i["quantity"] for i in added),
+                            "unique_items":       len(added),
+                            "shipping_value":     ship_fee,
+                            "tax_value":          float(tax),
+                        }
+                        events.append(_ev("purchase", purchase_params, items=added, ecommerce=ecommerce))
+                        _advance(5, 30)
+                    # Attach device/geo/traffic for refund events
+                    purchase_info["device"] = device_record
+                    purchase_info["geo"] = geo_record
+                    purchase_info["traffic_source"] = traffic_src_record
+
+    # Optional mid-session logout (only after purchase in non-noise sessions)
+    if not is_noise_session and sid.is_logged_in:
+        if random.random() < identity_cfg.get("mid_session_logout_rate", 0.0):
+            sid.logout()
+            events.append(_ev("logout"))
+            _advance(2, 10)
+            # Post-logout anonymous browsing
+            for _ in range(random.randint(1, 3)):
+                page = random.choice(SITE_PAGES)
+                events.append(_ev("page_view", [
+                    ep("page_location", string_value=_page_url(page["path"])),
+                    ep("page_title", string_value=page["title"]),
+                ], is_page_view=True))
+                _advance(15, 90)
 
     # Add engagement_time_msec to every event
     for ev in events:
@@ -758,11 +811,19 @@ def generate_session_events(
             ep("engagement_time_msec", int_value=random.randint(500, 30000))
         )
 
+    # Apply ga4_event_loss_rate: randomly drop events (except session_start)
+    event_loss_rate = noise_cfg.get("ga4_event_loss_rate", 0.0)
+    if event_loss_rate > 0 and not is_noise_session:
+        events = [
+            ev for ev in events
+            if ev["event_name"] == "session_start" or random.random() >= event_loss_rate
+        ]
+
     return events, purchase_info
 
 
 def generate_day_events(
-    users: list[dict],
+    persons: list[dict],
     target_date: datetime,
     config: dict,
     due_refunds: list[dict] | None = None,
@@ -791,25 +852,31 @@ def generate_day_events(
         campaign_dau_boost = 1.15
 
     adjusted_ratio = daily_active_ratio * dow_mult * campaign_dau_boost
-    active_count = max(1, int(len(users) * adjusted_ratio))
-    active_users = random.sample(users, min(active_count, len(users)))
+    active_count = max(1, int(len(persons) * adjusted_ratio))
+    active_persons = random.sample(persons, min(active_count, len(persons)))
 
     # Pass campaign info into session config
     session_config = dict(config)
     session_config["active_campaigns"] = active_campaigns
 
+    devices_index = config.get("devices_index", {})
+
     all_events:    list[dict] = []
     new_purchases: list[dict] = []
 
-    for user in active_users:
+    for person in active_persons:
         for _ in range(random.randint(*sessions_range)):
+            device = pick_session_device(person, devices_index)
+
             # Bot session check
             if random.random() < noise_cfg.get("bot_session_rate", 0.0):
-                bot_events = generate_bot_session(user, target_date, session_config)
+                bot_events = generate_bot_session(person, device, target_date, session_config)
                 all_events.extend(bot_events)
                 continue
 
-            session_events, p_info = generate_session_events(user, target_date, session_config)
+            session_events, p_info = generate_session_events(
+                person, device, target_date, session_config
+            )
             all_events.extend(session_events)
             if p_info:
                 new_purchases.append(p_info)

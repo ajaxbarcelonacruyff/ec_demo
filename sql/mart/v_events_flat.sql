@@ -240,6 +240,9 @@ SELECT
   -- === ユーザー識別 ===
   e.user_pseudo_id,
   e.user_id,
+  -- === Identity Resolution ===
+  ir.resolved_user_id,
+  COALESCE(e.user_id, ir.resolved_user_id) AS effective_user_id,
   e.user_first_touch_timestamp,
   e.user_first_touch_timestamp_jst,
 
@@ -356,4 +359,6 @@ FROM events_with_sequence e
 LEFT JOIN session_attributes s
   ON  e.user_pseudo_id = s.user_pseudo_id
   AND e.ga_session_id  = s.ga_session_id
+LEFT JOIN `PROJECT_ID.DATASET.v_identity_resolution` ir
+  ON e.user_pseudo_id = ir.user_pseudo_id
 ;
