@@ -119,35 +119,7 @@ output/
 └── order_items.csv
 ```
 
-### 3. スキーマの移行（任意）
-
-古いスキーマで生成した既存の出力がある場合、`migrate_schema.py` を使って再生成せずに新しい GA4 フィールドを追加できます。
-
-```bash
-python migrate_schema.py --input-dir output --output-dir output_v2
-```
-
-| オプション | デフォルト | 説明 |
-|---|---|---|
-| `--input-dir` | `output` | 既存の JSONL ファイルが含まれるディレクトリ |
-| `--output-dir` | `output_v2` | 移行後のファイルを出力するディレクトリ |
-
-データ損失を防ぐため、入力ディレクトリと出力ディレクトリは異なる場所を指定してください。同一ディレクトリへの上書きは拒否されます。
-
-セッション内のイベント順序が正しくない場合（タイムスタンプが同一のイベントがある場合）は、`fix_event_order.py` を使用してください。
-
-```bash
-python fix_event_order.py --input-dir output --output-dir output_fixed
-```
-
-| オプション | デフォルト | 説明 |
-|---|---|---|
-| `--input-dir` | `output` | 既存の JSONL ファイルが含まれるディレクトリ |
-| `--output-dir` | `output_fixed` | 並び替え後のファイルを出力するディレクトリ |
-
-入力ディレクトリと出力ディレクトリは異なる場所を指定してください。
-
-### 4. BigQuery へのロード
+### 3. BigQuery へのロード
 
 #### 必要なもの
 
@@ -221,7 +193,7 @@ GA4 events は実際の GA4 BigQuery Export と同じ日付シャーディング
 └── order_items
 ```
 
-### 5. データマートビューの作成
+### 4. データマートビューの作成
 
 BigQuery にテーブルをロードした後、データマートビューを作成します。
 
@@ -671,9 +643,7 @@ ec_demo/
 │   ├── traffic_sources.py           # 流入元データ
 │   ├── device_geo.py                # デバイス・地理データ
 │   ├── utils.py                     # ID 生成・タイムスタンプユーティリティ
-│   ├── bigquery_load.py             # BigQuery ローダー実装
-│   ├── migrate_schema.py            # スキーマ移行ツール
-│   └── fix_event_order.py           # イベント順序修正ツール
+│   └── bigquery_load.py             # BigQuery ローダー実装
 │
 ├── tests/                           # ユニット・統合テスト (pytest)
 │   ├── test_identity.py             # アイデンティティモジュールテスト

@@ -119,35 +119,7 @@ output/
 └── order_items.csv
 ```
 
-### 3. Migrate Schema (optional)
-
-If you have existing output generated against an older schema, use `migrate_schema.py` to add new GA4 fields without regenerating:
-
-```bash
-python migrate_schema.py --input-dir output --output-dir output_v2
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--input-dir` | `output` | Directory containing existing JSONL files |
-| `--output-dir` | `output_v2` | Destination directory for migrated files |
-
-The input and output directories must be different — the script refuses in-place overwrite to prevent data loss.
-
-If your output has incorrect event ordering within sessions (events with identical timestamps), use `fix_event_order.py`:
-
-```bash
-python fix_event_order.py --input-dir output --output-dir output_fixed
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--input-dir` | `output` | Directory containing existing JSONL files |
-| `--output-dir` | `output_fixed` | Destination directory for reordered files |
-
-The input and output directories must be different.
-
-### 4. Load into BigQuery
+### 3. Load into BigQuery
 
 #### Prerequisites
 
@@ -221,7 +193,7 @@ GA4 events are created as date-sharded tables, matching the real GA4 BigQuery Ex
 └── order_items
 ```
 
-### 5. Create Data Mart Views
+### 4. Create Data Mart Views
 
 After loading tables into BigQuery, create the data mart views.
 
@@ -671,9 +643,7 @@ ec_demo/
 │   ├── traffic_sources.py           # Traffic source data
 │   ├── device_geo.py                # Device and geographic data
 │   ├── utils.py                     # ID generation, timestamp utilities
-│   ├── bigquery_load.py             # BigQuery loader implementation
-│   ├── migrate_schema.py            # Schema migration tool
-│   └── fix_event_order.py           # Event ordering fix tool
+│   └── bigquery_load.py             # BigQuery loader implementation
 │
 ├── tests/                           # Unit and integration tests (pytest)
 │   ├── test_identity.py             # Identity module tests
