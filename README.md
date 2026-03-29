@@ -6,7 +6,7 @@ Statistically realistic GA4 BigQuery export data — generated, not fabricated.
 
 ## Table of Contents
 
-[Why This Exists](#why-this-exists) | [What It Generates](#what-it-generates) | [Realism Features](#realism-features) | [Quick Start](#quick-start) | [Configuration](#configuration-configyaml) | [Schema Reference](#schema-reference) | [Data Mart Views](#data-mart-views) | [File Structure](#file-structure)
+[Why This Exists](#why-this-exists) | [What It Generates](#what-it-generates) | [Realism Features](#realism-features) | [Quick Start](#quick-start) | [Configuration](#configuration-configyaml) | [Schema Reference](#schema-reference) | [File Structure](#file-structure)
 
 ---
 
@@ -21,7 +21,7 @@ GA4's BigQuery export format is deeply nested and statistically structured. Most
 
 ec_demo generates synthetic ecommerce events with real behavioral patterns: Pareto-distributed product popularity, user-segment-specific conversion rates, correlated traffic source and landing page assignments, payment failures with retry sequences, and purchase propensity drawn from a Beta distribution rather than a coin flip. The relational tables (customers, products, orders, order_items) join cleanly to the GA4 events via shared keys, so you can test cross-dataset queries without massaging the data first.
 
-The output is JSONL in GA4 BigQuery Export format, loadable with the included `bigquery_load.py` script. It is designed for development, testing, and demo environments where production data is not available.
+The output is JSONL in GA4 BigQuery Export format. It is designed for development, testing, and demo environments where production data is not available.
 
 ---
 
@@ -118,109 +118,6 @@ output/
 ├── orders.csv
 └── order_items.csv
 ```
-
-### 3. Load into BigQuery
-
-#### Prerequisites
-
-| Item | Description | Example |
-|---|---|---|
-| GCP Project ID | Project with BigQuery enabled | `my-project-123` |
-| Dataset name | Dataset to create (auto-created if missing) | `ec_demo` |
-| Location | Dataset region | `asia-northeast1` (Tokyo) / `US` / `EU` |
-| Authentication | One of the methods below | - |
-
-#### Authentication
-
-**Option A: gcloud CLI (recommended for local use)**
-
-```bash
-# Install gcloud CLI if not already installed
-# https://cloud.google.com/sdk/docs/install
-
-gcloud auth application-default login
-```
-
-**Option B: Service account key**
-
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
-```
-
-Required IAM roles for the service account:
-- `BigQuery Data Editor` (create/write datasets and tables)
-- `BigQuery Job User` (run load jobs)
-
-#### Run the Loader
-
-```bash
-python bigquery_load.py \
-  --project YOUR_PROJECT_ID \
-  --dataset ec_demo \
-  --location asia-northeast1
-```
-
-With an explicit service account key:
-
-```bash
-python bigquery_load.py \
-  --project YOUR_PROJECT_ID \
-  --dataset ec_demo \
-  --location asia-northeast1 \
-  --key-file /path/to/service-account-key.json
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--project` | (required) | GCP project ID |
-| `--dataset` | (required) | BigQuery dataset name |
-| `--location` | `asia-northeast1` | Dataset location |
-| `--output-dir` | `./output` | Directory containing generated files |
-| `--key-file` | None (uses ADC) | Path to service account key JSON |
-
-#### Table Layout After Loading
-
-GA4 events are created as date-sharded tables, matching the real GA4 BigQuery Export format.
-
-```
-{dataset}/
-├── events_20250101     # GA4 events (daily tables)
-├── events_20250102
-├── ...
-├── customers
-├── products
-├── orders
-└── order_items
-```
-
-### 4. Create Data Mart Views
-
-After loading tables into BigQuery, create the data mart views.
-
-```bash
-# Replace PROJECT_ID.DATASET with your actual values
-sed 's/PROJECT_ID\.DATASET/YOUR_PROJECT_ID.ec_demo/g' sql/mart/v_events_flat.sql \
-  | bq query --use_legacy_sql=false
-```
-
-Alternatively, paste the contents of `sql/mart/v_events_flat.sql` into the BigQuery console and replace `PROJECT_ID.DATASET` manually.
-
-#### Dataset Layout After View Creation
-
-```
-{dataset}/
-├── events_20250101     # GA4 events (daily tables)
-├── events_20250102
-├── ...
-├── customers
-├── products
-├── orders
-├── order_items
-└── v_events_flat       # Event flattening view
-```
-
-Verify in the BigQuery console:
-`https://console.cloud.google.com/bigquery?project=YOUR_PROJECT_ID`
 
 ---
 
@@ -600,35 +497,11 @@ session_traffic_source_last_click
 
 ---
 
-## Data Mart Views
-
-View definitions for data marts are stored under `sql/mart/`.
-
-### v_events_flat (Event Flattening View)
-
-A base view that flattens the nested GA4 BigQuery Export structure and enriches each event row with session-level attributes. Downstream marts (session, funnel, revenue, user) should query from this view.
-
-**Key transformations:**
-
-1. Pivots each `event_params` key into individual columns (24 keys)
-2. Flattens `device`, `geo`, `traffic_source`, `collected_traffic_source`, `session_traffic_source_last_click`
-3. Normalizes NULL-equivalent values (`(not set)`, `(none)`, `(not provided)`, empty string) to NULL — `(direct)` is preserved as-is
-4. Assigns `event_sequence_number` within each session using `event_timestamp, batch_page_id, batch_ordering_id, batch_event_index`
-5. Attaches session-level attributes to every event row:
-   - `session_traffic_source/medium/campaign/content`: latest non-NULL values from `collected_traffic_source`, fetched from the same event row to guarantee cross-field consistency
-   - `session_landing_page`: `page_location` where `entrances=1`
-   - `session_duration_sec`, `session_has_purchase`, etc.
-
-**File:** `sql/mart/v_events_flat.sql`
-
----
-
 ## File Structure
 
 ```
 ec_demo/
 ├── generate.py                      # Entry point (wrapper)
-├── bigquery_load.py                 # BigQuery loader (wrapper)
 ├── config.yaml                      # Generation parameters
 ├── requirements.txt
 ├── README.md / README_ja.md
@@ -643,18 +516,12 @@ ec_demo/
 │   ├── traffic_sources.py           # Traffic source data
 │   ├── device_geo.py                # Device and geographic data
 │   ├── utils.py                     # ID generation, timestamp utilities
-│   └── bigquery_load.py             # BigQuery loader implementation
 │
 ├── tests/                           # Unit and integration tests (pytest)
 │   ├── test_identity.py             # Identity module tests
 │   └── test_invariants.py           # 5 invariants + noise + consistency
 │
-├── docs/                            # Documentation
-│   ├── IDENTITY_MODEL.md            # Identity model spec (EN)
-│   ├── IDENTITY_MODEL_ja.md         # Identity model spec (JA)
-│   └── schema_ga4_latest.json       # GA4 schema reference
-│
-└── sql/mart/                        # BigQuery views
-    ├── v_events_flat.sql            # Event flattening view
-    └── v_identity_resolution.sql    # Identity resolution view
+└── docs/                            # Documentation
+    ├── IDENTITY_MODEL.md            # Identity model spec (EN)
+    └── IDENTITY_MODEL_ja.md         # Identity model spec (JA)
 ```
